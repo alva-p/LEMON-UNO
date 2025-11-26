@@ -11,10 +11,12 @@ export interface LobbyData {
   isPublic: boolean
   password?: string
   betAmount: number
+  currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' // Tipo de moneda para la apuesta
+  network?: 'ETH' | 'BASE' // Red blockchain (solo para crypto)
   maxPlayers: number
   players: Player[]
   createdAt: Date
-  status: 'waiting' | 'started' // Game status
+  status: 'waiting' | 'started' | 'finished' | 'cancelled' // Estado del lobby
   gameId?: string // Game ID when status is 'started'
   escrowId?: string // Escrow entry ID when game starts
 }
@@ -31,7 +33,9 @@ export class GameService {
     betAmount: number,
     isPublic: boolean,
     maxPlayers: number = 2,
-    password?: string
+    password?: string,
+    currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS',
+    network?: 'ETH' | 'BASE'
   ): LobbyData {
     const lobbyId = `lobby_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
 
@@ -42,6 +46,8 @@ export class GameService {
       isPublic,
       password,
       betAmount,
+      currency,
+      network,
       maxPlayers,
       players: [{ id: creator, name: creator, hand: [], hasCalledUno: false, isChallenged: false }],
       createdAt: new Date(),
@@ -126,7 +132,7 @@ export class GameService {
 
     // Crear el juego
     const gameId = `game_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount)
+    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount, lobby.currency, lobby.network)
 
     this.games.set(gameId, engine)
     
@@ -153,7 +159,7 @@ export class GameService {
     }
 
     const gameId = `game_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount)
+    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount, lobby.currency, lobby.network)
 
     this.games.set(gameId, engine)
     
@@ -243,31 +249,31 @@ export class GameService {
   }
 
   /**
-   * List all lobbies (public and private)
+   * List all lobbies (public and private) - excluding finished games
    */
   getAllLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values())
+    return Array.from(this.lobbies.values()).filter((l) => l.status !== 'finished' && l.status !== 'cancelled')
   }
 
   /**
-   * List all public lobbies
+   * List all public lobbies - excluding finished games
    */
   getPublicLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.isPublic)
+    return Array.from(this.lobbies.values()).filter((l) => l.isPublic && l.status !== 'finished' && l.status !== 'cancelled')
   }
 
   /**
-   * List all private lobbies
+   * List all private lobbies - excluding finished games
    */
   getPrivateLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => !l.isPublic)
+    return Array.from(this.lobbies.values()).filter((l) => !l.isPublic && l.status !== 'finished' && l.status !== 'cancelled')
   }
 
   /**
-   * List all free lobbies (betAmount === 0)
+   * List all free lobbies (betAmount === 0) - excluding finished games
    */
   getFreeLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.betAmount === 0)
+    return Array.from(this.lobbies.values()).filter((l) => l.betAmount === 0 && l.status !== 'finished')
   }
 
   /**
@@ -314,6 +320,9 @@ export class GameService {
       // Distribuir pot
       const distribution = gameEscrowService.distributePot(gameId, winners)
 
+      // Marcar el lobby como 'finished' en lugar de solo remover el juego
+      this.markLobbyAsFinished(gameId)
+
       // Remover juego
       this.games.delete(gameId)
 
@@ -325,6 +334,28 @@ export class GameService {
     } catch (err) {
       return { success: false, error: `Error finishing game: ${(err as Error).message}` }
     }
+  }
+
+  /**
+   * Mark lobby as finished when game ends
+   */
+  private markLobbyAsFinished(gameId: string): void {
+    for (const [lobbyId, lobby] of this.lobbies.entries()) {
+      if (lobby.gameId === gameId) {
+        lobby.status = 'finished'
+        console.log(`🏁 Lobby ${lobbyId} marcado como terminado`)
+        break
+      }
+    }
+  }
+
+  /**
+   * Public method to force mark lobby as finished (when escrow fails)
+   */
+  forceMarkLobbyAsFinished(gameId: string): void {
+    this.markLobbyAsFinished(gameId)
+    // Also delete the game from memory
+    this.games.delete(gameId)
   }
 
   /**

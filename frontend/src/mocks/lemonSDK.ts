@@ -194,6 +194,7 @@ export async function deposit(
   return new Promise((resolve) => {
     setTimeout(() => {
       const depositAmount = parseFloat(amount)
+      const currency = tokenName || 'ARS'
 
       // Validaciones
       if (isNaN(depositAmount) || depositAmount <= 0) {
@@ -207,22 +208,47 @@ export async function deposit(
         return
       }
 
-      if (depositAmount < 100) {
+      // Límites según moneda
+      let minDeposit = 100
+      let maxDeposit = 100000
+      let currencyLabel = 'ARS'
+
+      switch (currency) {
+        case 'ETH':
+          minDeposit = 0.001
+          maxDeposit = 10
+          currencyLabel = 'ETH'
+          break
+        case 'USDT':
+        case 'USDC':
+          minDeposit = 1
+          maxDeposit = 10000
+          currencyLabel = currency
+          break
+        case 'ARS':
+        default:
+          minDeposit = 100
+          maxDeposit = 100000
+          currencyLabel = 'ARS'
+          break
+      }
+
+      if (depositAmount < minDeposit) {
         resolve({
           result: TransactionResult.FAILED,
           error: {
-            message: 'Depósito mínimo: $100 ARS',
+            message: `Depósito mínimo: ${minDeposit} ${currencyLabel}`,
             code: 'MINIMUM_DEPOSIT',
           },
         })
         return
       }
 
-      if (depositAmount > 100000) {
+      if (depositAmount > maxDeposit) {
         resolve({
           result: TransactionResult.FAILED,
           error: {
-            message: 'Depósito máximo: $100.000 ARS',
+            message: `Depósito máximo: ${maxDeposit} ${currencyLabel}`,
             code: 'MAXIMUM_DEPOSIT',
           },
         })

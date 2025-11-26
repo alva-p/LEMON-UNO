@@ -52,7 +52,9 @@ export interface GameState {
   startedAt?: Date
   finishedAt?: Date
   winner?: string
-  bet: number // ARS amount
+  bet: number // Monto de la apuesta
+  currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' // Tipo de moneda
+  network?: 'ETH' | 'BASE' // Red blockchain (solo para crypto)
   pot: number // total bet * players
   pendingDrawCount: number // Cards to draw if no +2/+4 played (0 if none pending)
   pendingDrawType?: 'DRAW_TWO' | 'WILD_DRAW_FOUR' // Type of card that created pending

@@ -83,15 +83,27 @@ export const MiniApp: React.FC = () => {
     }
   }, [])
 
-  const handleCreateGame = async (betAmount: number, maxPlayers: number, isPublic: boolean, password?: string) => {
+  const handleCreateGame = async (
+    betAmount: number, 
+    maxPlayers: number, 
+    isPublic: boolean, 
+    password?: string,
+    currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS',
+    network?: 'ETH' | 'BASE'
+  ) => {
     try {
+      const body: any = { betAmount, maxPlayers, isPublic, password, currency }
+      if (currency !== 'ARS' && network) {
+        body.network = network
+      }
+
       const res = await fetch(`${getApiUrl()}/lobbies`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-wallet-id': walletId,
         },
-        body: JSON.stringify({ betAmount, maxPlayers, isPublic, password }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) throw new Error('Error al crear lobby')
@@ -285,6 +297,7 @@ export const MiniApp: React.FC = () => {
         <LobbyScreen
           onCreateGame={handleCreateGame}
           onJoinGame={handleJoinGame}
+          onNavigate={setScreen}
           lobbies={lobbies}
           loading={loadingLobbies}
         />
@@ -301,7 +314,9 @@ export const MiniApp: React.FC = () => {
           <div className="lobby-info">
             <div className="lobby-stat">
               <span className="stat-label">Apuesta</span>
-              <span className="stat-value">${currentLobby.betAmount} ARS</span>
+              <span className="stat-value">
+                {currentLobby.currency === 'ARS' ? '$' : ''}{currentLobby.betAmount} {currentLobby.currency}
+              </span>
             </div>
             <div className="lobby-stat">
               <span className="stat-label">Privacidad</span>
@@ -410,22 +425,24 @@ export const MiniApp: React.FC = () => {
         </Suspense>
       )}
 
-      {/* Navigation */}
-      <div className="bottom-nav">
-        <button className={screen === 'lobby' ? 'active' : ''} onClick={() => setScreen('lobby')}>
-          🎮 Lobby
-        </button>
-        <button
-          className={screen === 'game' ? 'active' : ''}
-          onClick={() => setScreen('game')}
-          disabled={!gameId}
-        >
-          🃏 Game
-        </button>
-        <button className={screen === 'leaderboard' ? 'active' : ''} onClick={() => setScreen('leaderboard')}>
-          🏆 Ranking
-        </button>
-      </div>
+      {/* Navigation - Solo mostrar en la pantalla principal (no en lobby ni waiting) */}
+      {screen !== 'lobby' && screen !== 'waiting' && (
+        <div className="bottom-nav">
+          <button onClick={() => setScreen('lobby')}>
+            🎮 Lobby
+          </button>
+          <button
+            className={screen === 'game' ? 'active' : ''}
+            onClick={() => setScreen('game')}
+            disabled={!gameId}
+          >
+            🃏 Game
+          </button>
+          <button className={screen === 'leaderboard' ? 'active' : ''} onClick={() => setScreen('leaderboard')}>
+            🏆 Ranking
+          </button>
+        </div>
+      )}
 
       {wsError && <div className="error-banner">{wsError}</div>}
     </div>

@@ -197,6 +197,24 @@ export class GameWebSocketHandler {
   }
 
   private broadcastGameStateWithData(gameState: any): void {
+    // Check if game has ended and finish it
+    if (gameState.winner && !gameState.finished) {
+      console.log(`🏆 Juego terminado! Ganador: ${gameState.winner}`)
+      
+      // Intentar finalizar con escrow primero
+      const result = this.gameService.finishGameWithEscrow(this.gameId, gameState.winner, gameState.players)
+      
+      if (result.success) {
+        console.log('✅ Escrow distribuido y lobby marcado como terminado')
+        gameState.finished = true
+      } else {
+        // Si falla el escrow (no existe), marcar el lobby como finished de todas formas
+        console.log(`⚠️ Error en escrow (${result.error}), marcando lobby como finished de todas formas`)
+        this.gameService.forceMarkLobbyAsFinished(this.gameId)
+        gameState.finished = true
+      }
+    }
+
     // Import getPlayableCards to calculate playable cards
     const { getPlayableCards } = require('../game/cards')
 

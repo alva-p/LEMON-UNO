@@ -159,25 +159,63 @@ app.post('/auth/verify', async (req: Request, res: Response) => {
 /**
  * Create a new lobby
  * POST /lobbies
- * Body: { betAmount: number, isPublic: boolean, password?: string, maxPlayers?: number }
+ * Body: { betAmount: number, isPublic: boolean, password?: string, maxPlayers?: number, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC', network?: 'ETH' | 'BASE' }
  */
 app.post('/lobbies', (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
-  const { betAmount, isPublic, password, maxPlayers = 2 } = req.body
+  const { betAmount, isPublic, password, maxPlayers = 2, currency = 'ARS', network } = req.body
 
-  if (!betAmount || betAmount < 100 || betAmount > 100000) {
-    return res.status(400).json({ error: 'Invalid bet amount (min: 100, max: 100000)' })
+  // Validate currency first
+  const validCurrencies = ['ARS', 'ETH', 'USDT', 'USDC']
+  if (!validCurrencies.includes(currency)) {
+    return res.status(400).json({ error: 'Invalid currency. Must be ARS, ETH, USDT, or USDC' })
   }
 
-  const lobby = gameService.createLobby(walletId, betAmount, isPublic, maxPlayers, password)
+  // Validate bet amount based on currency
+  let minBet = 100
+  let maxBet = 100000
+  
+  switch (currency) {
+    case 'ARS':
+      minBet = 100
+      maxBet = 100000
+      break
+    case 'ETH':
+      minBet = 0.001
+      maxBet = 10
+      break
+    case 'USDT':
+    case 'USDC':
+      minBet = 1
+      maxBet = 10000
+      break
+  }
+
+  if (!betAmount || betAmount < minBet || betAmount > maxBet) {
+    return res.status(400).json({ 
+      error: `Invalid bet amount for ${currency}. Min: ${minBet}, Max: ${maxBet}` 
+    })
+  }
+
+  // Validate network for crypto
+  if (currency !== 'ARS') {
+    const validNetworks = ['ETH', 'BASE']
+    if (!network || !validNetworks.includes(network)) {
+      return res.status(400).json({ error: 'Network required for crypto. Must be ETH or BASE' })
+    }
+  }
+
+  const lobby = gameService.createLobby(walletId, betAmount, isPublic, maxPlayers, password, currency, network)
   console.log(`🎮 New lobby created: ${lobby.id}`)
-  console.log(`   Creator: ${walletId}, Bet: $${betAmount}, Public: ${isPublic}`)
+  console.log(`   Creator: ${walletId}, Bet: ${betAmount} ${currency}${network ? ` (${network})` : ''}, Public: ${isPublic}`)
   res.json({ 
     lobby: {
       id: lobby.id,
       creator: lobby.creator,
       creatorId: lobby.creatorId,
       betAmount: lobby.betAmount,
+      currency: lobby.currency,
+      network: lobby.network,
       isPublic: lobby.isPublic,
       maxPlayers: lobby.maxPlayers,
       players: lobby.players,

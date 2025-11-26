@@ -145,10 +145,10 @@ export const shareDeeplinkStyles = `
 
 .btn-share {
   padding: 10px 20px;
-  background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
-  color: white;
+  background: #00F068;
+  color: #000000;
   border: none;
-  border-radius: 8px;
+  border-radius: 25px;
   font-weight: 700;
   font-size: 14px;
   cursor: pointer;
@@ -175,8 +175,8 @@ export const shareDeeplinkStyles = `
   top: 100%;
   right: 0;
   margin-top: 12px;
-  background: linear-gradient(135deg, #1a1f3a 0%, #252a45 100%);
-  border: 2px solid rgba(0, 212, 255, 0.3);
+  background: #111111;
+  border: 2px solid rgba(0, 240, 104, 0.3);
   border-radius: 12px;
   padding: 20px;
   width: 320px;
@@ -205,14 +205,14 @@ export const shareDeeplinkStyles = `
   background: rgba(0, 212, 255, 0.1);
   border: 1px solid rgba(0, 212, 255, 0.3);
   border-radius: 6px;
-  color: #00d4ff;
+  color: #00F068;
   font-size: 12px;
   font-family: monospace;
 }
 
 .deeplink-input:focus {
   outline: none;
-  border-color: #00d4ff;
+  border-color: #00F068;
   box-shadow: 0 0 8px rgba(0, 212, 255, 0.2);
 }
 
@@ -270,7 +270,7 @@ export const shareDeeplinkStyles = `
 }
 
 .web-link {
-  color: #00d4ff;
+  color: #00F068;
   text-decoration: none;
   font-size: 11px;
   word-break: break-all;

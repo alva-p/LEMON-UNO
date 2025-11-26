@@ -5,7 +5,13 @@ export { Card, CardColor, CardType, GameState, GamePhase, Player, createDeck, sh
 export class GameEngine {
   private state: GameState
 
-  constructor(gameId: string, players: Player[], betAmount: number) {
+  constructor(
+    gameId: string, 
+    players: Player[], 
+    betAmount: number, 
+    currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS', 
+    network?: 'ETH' | 'BASE'
+  ) {
     const deck = shuffle(createDeck())
 
     // Deal 7 cards to each player
@@ -32,6 +38,8 @@ export class GameEngine {
       createdAt: new Date(),
       startedAt: new Date(),
       bet: betAmount,
+      currency,
+      network,
       pot: betAmount * players.length,
       pendingDrawCount: 0,
       cardPlayedThisTurn: false,

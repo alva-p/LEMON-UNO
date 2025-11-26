@@ -16,6 +16,8 @@ function getApiUrl(): string {
 interface Lobby {
   id: string
   betAmount: number
+  currency: 'ARS' | 'ETH' | 'USDT' | 'USDC'
+  network?: 'ETH' | 'BASE'
   maxPlayers: number
   players: any[]
   isPublic: boolean
@@ -23,8 +25,9 @@ interface Lobby {
 }
 
 export interface LobbyScreenProps {
-  onCreateGame: (betAmount: number, maxPlayers: number, isPublic: boolean, password?: string) => void
+  onCreateGame: (betAmount: number, maxPlayers: number, isPublic: boolean, password?: string, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC', network?: 'ETH' | 'BASE') => void
   onJoinGame: (lobbyId: string, password?: string) => void
+  onNavigate?: (screen: 'leaderboard') => void
   lobbies?: Lobby[]
   loading?: boolean
 }
@@ -32,12 +35,13 @@ export interface LobbyScreenProps {
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onCreateGame,
   onJoinGame,
+  onNavigate,
   lobbies = [],
   loading = false,
 }) => {
   const { user } = useAuth()
   const [tab, setTab] = useState<'public' | 'private' | 'create'>('public')
-  const [betAmount, setBetAmount] = useState(500)
+  const [betAmount, setBetAmount] = useState(100)
   const [maxPlayers, setMaxPlayers] = useState(2)
   const [password, setPassword] = useState('')
   const [isPrivate, setIsPrivate] = useState(false)
@@ -45,22 +49,92 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [showDepositModal, setShowDepositModal] = useState(false)
   const [showWithdrawModal, setShowWithdrawModal] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
+  const [currency, setCurrency] = useState<'ARS' | 'ETH' | 'USDT' | 'USDC'>('ARS')
+  const [network, setNetwork] = useState<'ETH' | 'BASE'>('BASE')
 
-  const quickBets = [100, 250, 500, 1000, 5000]
+  // Quick bets según moneda
+  const getQuickBets = () => {
+    switch (currency) {
+      case 'ARS':
+        return [100, 250, 500, 1000, 5000]
+      case 'ETH':
+        return [0.001, 0.01, 0.05, 0.1, 0.5]
+      case 'USDT':
+      case 'USDC':
+        return [1, 5, 10, 50, 100]
+      default:
+        return [100, 250, 500, 1000, 5000]
+    }
+  }
+
+  // Límites según moneda
+  const getBetLimits = () => {
+    switch (currency) {
+      case 'ARS':
+        return { min: 100, max: 100000 }
+      case 'ETH':
+        return { min: 0.001, max: 10 }
+      case 'USDT':
+      case 'USDC':
+        return { min: 1, max: 10000 }
+      default:
+        return { min: 100, max: 100000 }
+    }
+  }
+
+  const quickBets = getQuickBets()
+  const betLimits = getBetLimits()
 
   // Separate lobbies into public and private
   const publicLobbies = lobbies.filter(l => l.isPublic)
   const privateLobbies = lobbies.filter(l => !l.isPublic)
 
   const handleCreate = () => {
-    if (betAmount < 100 || betAmount > 100000) {
-      alert('La apuesta debe estar entre 100 y 100.000 ARS')
+    const limits = betLimits
+    const numBetAmount = Number(betAmount)
+
+    console.log('🎮 Crear Lobby - Debug:', {
+      currency,
+      betAmount,
+      betAmountType: typeof betAmount,
+      numBetAmount,
+      limits,
+      comparison: {
+        'betAmount < limits.min': numBetAmount < limits.min,
+        'betAmount > limits.max': numBetAmount > limits.max,
+        calculation: `${numBetAmount} < ${limits.min} = ${numBetAmount < limits.min}`
+      }
+    })
+
+    if (isNaN(numBetAmount) || numBetAmount <= 0) {
+      alert('Por favor ingresa una apuesta válida')
       return
     }
-    onCreateGame(betAmount, maxPlayers, !isPrivate, isPrivate ? password : undefined)
-    setBetAmount(500)
+
+    if (numBetAmount < limits.min || numBetAmount > limits.max) {
+      alert(`La apuesta debe estar entre ${limits.min} y ${limits.max.toLocaleString()} ${currency}`)
+      return
+    }
+
+    // Validar que el usuario tenga saldo suficiente en la moneda seleccionada
+    const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0)
+    if (userBalance < numBetAmount) {
+      alert(`No tienes suficiente saldo en ${currency}. Saldo actual: ${userBalance.toLocaleString()}`)
+      return
+    }
+
+    // Validar network para crypto
+    if (currency !== 'ARS' && !network) {
+      alert('Debes seleccionar una red para crypto')
+      return
+    }
+
+    onCreateGame(numBetAmount, maxPlayers, !isPrivate, isPrivate ? password : undefined, currency, currency !== 'ARS' ? network : undefined)
+    setBetAmount(100)
     setPassword('')
     setIsPrivate(false)
+    setCurrency('ARS')
+    setNetwork('BASE')
     setTab('public')
   }
 
@@ -80,28 +154,55 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       {/* Header con Balance y Deposit */}
       <div className="lobby-header">
         <div className="logo-section">
-          <div className="uno-logo">🎴</div>
-          <h1>UNO CASH</h1>
+          <div className="uno-logo">₿ 🃏 ⟠ </div>
+          <h1>UNO Chain</h1>
           <p className="subtitle">Juega • Apuesta • Gana</p>
         </div>
         {/* Balance y Deposit Button */}
         <div className="header-balance-section">
           <div className="balance-display-compact">
             <span className="balance-label">Saldo:</span>
-            <span className="balance-value">${user?.balance.toLocaleString()} ARS</span>
+            <span className="balance-value">
+              ${(user?.balances?.ARS ?? user?.balance ?? 0).toLocaleString()} ARS
+            </span>
+            {(user?.balances?.ETH ?? 0) > 0 && (
+              <span className="balance-value crypto-balance">
+                {user?.balances.ETH.toFixed(4)} ETH
+              </span>
+            )}
+            {(user?.balances?.USDT ?? 0) > 0 && (
+              <span className="balance-value crypto-balance">
+                {user?.balances.USDT.toFixed(2)} USDT
+              </span>
+            )}
+            {(user?.balances?.USDC ?? 0) > 0 && (
+              <span className="balance-value crypto-balance">
+                {user?.balances.USDC.toFixed(2)} USDC
+              </span>
+            )}
           </div>
-          <button
-            className="btn-deposit-header"
-            onClick={() => setShowDepositModal(true)}
-          >
-            💳 Depositar
-          </button>
-          <button
-            className="btn-withdraw-header"
-            onClick={() => setShowWithdrawModal(true)}
-          >
-            💸 Retirar
-          </button>
+          <div className="header-actions">
+            <button
+              className="btn-deposit-header"
+              onClick={() => setShowDepositModal(true)}
+            >
+              💳 Depositar
+            </button>
+            <button
+              className="btn-withdraw-header"
+              onClick={() => setShowWithdrawModal(true)}
+            >
+              💸 Retirar
+            </button>
+            {onNavigate && (
+              <button
+                className="btn-ranking-header"
+                onClick={() => onNavigate('leaderboard')}
+              >
+                🏆 Ranking
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -114,15 +215,14 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           onClick={() => setTab('public')}
         >
           <span className="icon">🔓</span>
-          Públicos (Gratis)
+          Públicos
         </button>
         <button
           className={`tab-btn ${tab === 'private' ? 'active' : ''}`}
           onClick={() => setTab('private')}
         >
           <span className="icon">🔒</span>
-          Privados (Pago)
-        </button>
+          Privados        </button>
         <button
           className={`tab-btn ${tab === 'create' ? 'active' : ''}`}
           onClick={() => setTab('create')}
@@ -145,7 +245,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <div className="empty-state">
                 <div className="empty-icon">🎪</div>
                 <h3>No hay juegos disponibles</h3>
-                <p>¡Crea uno y invita a tus amigos!</p>
+                <p>¡Crea uno e invita a tus amigos!</p>
               </div>
             ) : (
               <div className="games-grid">
@@ -159,7 +259,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       <div className="bet-section">
                         <span className="bet-label">Apuesta</span>
                         <span className="bet-value">${lobby.betAmount}</span>
-                        <span className="bet-currency">ARS</span>
+                        <span className="bet-currency">{lobby.currency}{lobby.network ? ` (${lobby.network})` : ''}</span>
                       </div>
 
                       <div className="players-section">
@@ -214,7 +314,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       <div className="bet-section">
                         <span className="bet-label">Apuesta</span>
                         <span className="bet-value">${lobby.betAmount}</span>
-                        <span className="bet-currency">ARS</span>
+                        <span className="bet-currency">{lobby.currency}{lobby.network ? ` (${lobby.network})` : ''}</span>
                       </div>
 
                       <div className="players-section">
@@ -264,32 +364,112 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         setSelectedAmount(bet)
                       }}
                     >
-                      ${bet}
+                      {currency === 'ARS' ? '$' : ''}{bet} {currency !== 'ARS' ? currency : ''}
                     </button>
                   ))}
                 </div>
               </div>
 
+              {/* Currency Selector */}
+              <div className="form-group">
+                <label className="form-label">💱 Tipo de Moneda</label>
+                <div className="currency-selector">
+                  <button
+                    className={`currency-option ${currency === 'ARS' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('ARS')
+                      setBetAmount(100)
+                      setSelectedAmount(null)
+                    }}
+                  >
+                    🇦🇷 ARS (Fiat)
+                  </button>
+                  <button
+                    className={`currency-option ${currency === 'USDT' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('USDT')
+                      setNetwork('BASE')
+                      setBetAmount(1)
+                      setSelectedAmount(null)
+                    }}
+                  >
+                    💵 USDT
+                  </button>
+                  <button
+                    className={`currency-option ${currency === 'USDC' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('USDC')
+                      setNetwork('BASE')
+                      setBetAmount(1)
+                      setSelectedAmount(null)
+                    }}
+                  >
+                    💵 USDC
+                  </button>
+                  <button
+                    className={`currency-option ${currency === 'ETH' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('ETH')
+                      setBetAmount(0.001)
+                      setSelectedAmount(null)
+                    }}
+                  >
+                    ⟠ ETH
+                  </button>
+                </div>
+              </div>
+
+              {/* Network Selector (only for ETH) */}
+              {currency === 'ETH' && (
+                <div className="form-group">
+                  <label className="form-label">🌐 Red Blockchain</label>
+                  <div className="network-selector">
+                    <button
+                      className={`network-option ${network === 'ETH' ? 'active' : ''}`}
+                      onClick={() => setNetwork('ETH')}
+                    >
+                      Ethereum
+                    </button>
+                    <button
+                      className={`network-option ${network === 'BASE' ? 'active' : ''}`}
+                      onClick={() => setNetwork('BASE')}
+                    >
+                      Base
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Info: USDT/USDC siempre en Base */}
+              {(currency === 'USDT' || currency === 'USDC') && (
+                <div className="network-info">
+                  <span className="network-badge">🌐 Red: Base (L2)</span>
+                </div>
+              )}
+
               {/* Custom Bet Input */}
               <div className="form-group">
                 <label className="form-label">Apuesta Personalizada</label>
                 <div className="custom-input-group">
-                  <span className="currency">$</span>
+                  <span className="currency">{currency === 'ARS' ? '$' : ''}</span>
                   <input
                     type="number"
-                    min="100"
-                    max="100000"
+                    min={betLimits.min}
+                    max={betLimits.max}
+                    step={currency === 'ETH' ? '0.001' : currency === 'ARS' ? '1' : '0.1'}
                     value={betAmount}
                     onChange={(e) => {
                       setBetAmount(Number(e.target.value))
                       setSelectedAmount(null)
                     }}
-                    placeholder="500"
+                    placeholder={betLimits.min.toString()}
                     className="custom-input"
                   />
-                  <span className="unit">ARS</span>
+                  <span className="unit">{currency}</span>
                 </div>
-                <small className="input-hint">Min $100 • Max $100.000</small>
+                <small className="input-hint">
+                  Min {betLimits.min} • Max {betLimits.max.toLocaleString()} {currency}
+                </small>
               </div>
 
               {/* Players Selector */}
@@ -357,9 +537,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <button
                 className="btn-create-game"
                 onClick={handleCreate}
-                disabled={loading || betAmount < 100}
+                disabled={loading || betAmount < betLimits.min}
               >
-                {loading ? '⏳ Creando...' : '🎮 CREAR JUEGO'}
+                {loading ? '⏳ Creando...' : '🎮 CREAR LOBBY'}
               </button>
             </div>
           </div>

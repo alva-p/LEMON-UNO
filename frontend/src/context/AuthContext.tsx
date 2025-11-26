@@ -19,7 +19,13 @@ export interface User {
   walletId: string
   address: string
   username: string
-  balance: number
+  balance: number // ARS balance (mantener por compatibilidad)
+  balances: {
+    ARS: number
+    ETH: number
+    USDT: number
+    USDC: number
+  }
   wins: number
   points: number
 }
@@ -32,7 +38,7 @@ export interface AuthContextType {
   error: string | null
   login: () => Promise<void>
   logout: () => void
-  updateBalance: (amount: number) => void
+  updateBalance: (amount: number, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC') => void
   addWin: (points: number) => void
 }
 
@@ -53,7 +59,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const savedUser = localStorage.getItem('lemon_user')
     if (savedUser) {
       try {
-        setUser(JSON.parse(savedUser))
+        const parsed = JSON.parse(savedUser)
+        // Migrar formato antiguo al nuevo con balances multi-moneda
+        if (!parsed.balances) {
+          parsed.balances = {
+            ARS: parsed.balance || 0,
+            ETH: 0,
+            USDT: 0,
+            USDC: 0,
+          }
+        }
+        setUser(parsed)
       } catch (err) {
         console.error('Failed to restore user session:', err)
       }
@@ -135,6 +151,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         address: verifyData.user.address,
         username: verifyData.user.username,
         balance: verifyData.user.balance || 0,
+        balances: {
+          ARS: verifyData.user.balance || 0,
+          ETH: 0,
+          USDT: 0,
+          USDC: 0,
+        },
         wins: verifyData.user.totalWins || 0,
         points: verifyData.user.totalPoints || 0,
       }
@@ -158,9 +180,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('lemon_user')
   }
 
-  const updateBalance = (amount: number) => {
+  const updateBalance = (amount: number, currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS') => {
     if (user) {
-      const updated = { ...user, balance: amount }
+      const updated = {
+        ...user,
+        balance: currency === 'ARS' ? amount : user.balance,
+        balances: {
+          ...user.balances,
+          [currency]: amount,
+        },
+      }
       setUser(updated)
       localStorage.setItem('lemon_user', JSON.stringify(updated))
     }

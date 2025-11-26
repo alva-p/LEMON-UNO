@@ -11,14 +11,60 @@ interface WithdrawModalProps {
 export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const { user, updateBalance } = useAuth();
   const [amount, setAmount] = useState('');
-  const [tokenName, setTokenName] = useState('USDC');
+  const [currency, setCurrency] = useState<'ARS' | 'ETH' | 'USDT' | 'USDC'>('ARS');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
-  const tokens = ['USDC', 'USDT', 'ETH'];
-  const minAmount = 50;
-  const maxAmount = 50000;
+  // Reset success state when modal closes
+  React.useEffect(() => {
+    if (!isOpen) {
+      setSuccess(false);
+      setError('');
+    }
+  }, [isOpen]);
+
+  // Límites según moneda
+  const getLimits = () => {
+    switch (currency) {
+      case 'ARS':
+        return { min: 100, max: 100000 };
+      case 'ETH':
+        return { min: 0.001, max: 10 };
+      case 'USDT':
+      case 'USDC':
+        return { min: 1, max: 10000 };
+      default:
+        return { min: 100, max: 100000 };
+    }
+  };
+
+  const limits = getLimits();
+
+  // Quick amounts según moneda
+  const getQuickAmounts = () => {
+    switch (currency) {
+      case 'ARS':
+        return [500, 1000, 5000, 10000];
+      case 'ETH':
+        return [0.01, 0.05, 0.1, 0.5];
+      case 'USDT':
+      case 'USDC':
+        return [10, 50, 100, 500];
+      default:
+        return [500, 1000, 5000, 10000];
+    }
+  };
+
+  const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    // Permitir decimales para crypto
+    if (currency === 'ARS') {
+      setAmount(value.replace(/[^0-9]/g, ''));
+    } else {
+      setAmount(value.replace(/[^0-9.]/g, ''));
+    }
+  };
 
   const handleWithdraw = async () => {
     setError('');
@@ -30,17 +76,18 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, o
       return;
     }
 
-    if (numAmount < minAmount) {
-      setError(`El mínimo para retirar es $${minAmount} ARS`);
+    if (numAmount < limits.min) {
+      setError(`El mínimo para retirar es ${limits.min} ${currency}`);
       return;
     }
 
-    if (numAmount > maxAmount) {
-      setError(`El máximo para retirar es $${maxAmount} ARS`);
+    if (numAmount > limits.max) {
+      setError(`El máximo para retirar es ${limits.max.toLocaleString()} ${currency}`);
       return;
     }
 
-    if (user && numAmount > user.balance) {
+    const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0);
+    if (numAmount > userBalance) {
       setError('Saldo insuficiente para este retiro');
       return;
     }
@@ -48,18 +95,16 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, o
     setLoading(true);
 
     try {
-      const result = await withdraw(amount.toString(), tokenName);
+      const result = await withdraw(amount.toString(), currency);
 
       if (result.result === 'SUCCESS') {
         // Deduct amount from balance
-        if (user) {
-          updateBalance(user.balance - numAmount);
-        }
+        const newBalance = userBalance - numAmount;
+        updateBalance(newBalance, currency);
         setSuccess(true);
         setTimeout(() => {
           setSuccess(false);
           setAmount('');
-          setTokenName('USDC');
           onSuccess();
           onClose();
         }, 1500);
@@ -83,7 +128,8 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, o
 
   const handleMaxAmount = () => {
     if (user) {
-      const withdrawAmount = Math.min(user.balance, maxAmount);
+      const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0);
+      const withdrawAmount = Math.min(userBalance, limits.max);
       setAmount(withdrawAmount.toString());
       setError('');
     }
@@ -91,84 +137,119 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, o
 
   if (!isOpen) return null;
 
+  const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>💸 Retirar Fondos</h2>
-          <button className="close-btn" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose}>✕</button>
         </div>
 
         {!success ? (
           <>
             <div className="modal-body">
+              {/* Currency Selector */}
               <div className="form-group">
-                <label>Cantidad (ARS)</label>
-                <div className="amount-input-wrapper">
-                  <span className="currency-symbol">$</span>
-                  <input
-                    type="number"
-                    placeholder="0.00"
-                    value={amount}
-                    onChange={(e) => {
-                      setAmount(e.target.value);
-                      setError('');
+                <label>Moneda</label>
+                <div className="currency-selector-modal">
+                  <button
+                    className={`currency-option-modal ${currency === 'ARS' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('ARS');
+                      setAmount('');
                     }}
                     disabled={loading}
-                    min={minAmount}
-                    max={maxAmount}
+                  >
+                    🇦🇷 ARS
+                  </button>
+                  <button
+                    className={`currency-option-modal ${currency === 'USDT' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('USDT');
+                      setAmount('');
+                    }}
+                    disabled={loading}
+                  >
+                    💵 USDT
+                  </button>
+                  <button
+                    className={`currency-option-modal ${currency === 'USDC' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('USDC');
+                      setAmount('');
+                    }}
+                    disabled={loading}
+                  >
+                    💵 USDC
+                  </button>
+                  <button
+                    className={`currency-option-modal ${currency === 'ETH' ? 'active' : ''}`}
+                    onClick={() => {
+                      setCurrency('ETH');
+                      setAmount('');
+                    }}
+                    disabled={loading}
+                  >
+                    ⟠ ETH
+                  </button>
+                </div>
+              </div>
+
+              {/* Network Info */}
+              {currency === 'ETH' && (
+                <div className="network-info">
+                  <span className="network-badge">🌐 Redes disponibles: Ethereum y Base</span>
+                </div>
+              )}
+              {(currency === 'USDT' || currency === 'USDC') && (
+                <div className="network-info">
+                  <span className="network-badge">🌐 Red: Base (L2)</span>
+                </div>
+              )}
+
+              {/* Balance Display */}
+              <div className="balance-display">
+                <label>Saldo Actual</label>
+                <div className="balance-amount">
+                  {currency === 'ARS' ? '$' : ''}{userBalance.toLocaleString()} {currency}
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="form-group">
+                <label htmlFor="withdraw-amount">Monto a Retirar</label>
+                <div className="amount-input-wrapper">
+                  <span className="currency-symbol">{currency === 'ARS' ? '$' : ''}</span>
+                  <input
+                    id="withdraw-amount"
+                    type="text"
+                    placeholder="0"
+                    value={amount}
+                    onChange={handleAmountChange}
+                    disabled={loading}
+                    className="amount-input"
                   />
                 </div>
+                <span className="currency-code">{currency}</span>
+                <small className="input-hint">
+                  Mínimo: {limits.min} | Máximo: {limits.max.toLocaleString()} {currency}
+                </small>
               </div>
 
-              <div className="form-group">
-                <label>Red/Token</label>
-                <select
-                  value={tokenName}
-                  onChange={(e) => setTokenName(e.target.value)}
-                  disabled={loading}
-                >
-                  {tokens.map((token) => (
-                    <option key={token} value={token}>
-                      {token}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="modal-info">
-                <div className="info-row">
-                  <span>Saldo disponible:</span>
-                  <span className="info-value">${user?.balance?.toFixed(2) || '0.00'} ARS</span>
-                </div>
-                <div className="info-row">
-                  <span>Comisión:</span>
-                  <span className="info-value">$0 (sin comisión)</span>
-                </div>
-              </div>
-
+              {/* Quick Amounts */}
               <div className="quick-amounts">
-                <button
-                  className="quick-btn"
-                  onClick={() => handleQuickAmount(100)}
-                  disabled={loading}
-                >
-                  $100
-                </button>
-                <button
-                  className="quick-btn"
-                  onClick={() => handleQuickAmount(500)}
-                  disabled={loading}
-                >
-                  $500
-                </button>
-                <button
-                  className="quick-btn"
-                  onClick={() => handleQuickAmount(1000)}
-                  disabled={loading}
-                >
-                  $1k
-                </button>
+                {getQuickAmounts().map((quickAmount) => (
+                  <button
+                    key={quickAmount}
+                    className="quick-btn"
+                    onClick={() => handleQuickAmount(quickAmount)}
+                    disabled={loading}
+                  >
+                    {currency === 'ARS' ? '$' : ''}{quickAmount} {currency !== 'ARS' ? currency : ''}
+                  </button>
+                ))}
                 <button
                   className="quick-btn"
                   onClick={handleMaxAmount}

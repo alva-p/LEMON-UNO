@@ -115,7 +115,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
           <span className="indicator-dot"></span>
           <span className="indicator-text">
-            {isMyTurn ? '🎮 TU TURNO' : `🎯 ${currentPlayer.name}`}
+            {isMyTurn ? '🎮 TU TURNO' : `🎯 ${currentPlayer.name?.slice(0, 15)}${currentPlayer.name?.length > 15 ? '...' : ''}`}
           </span>
         </div>
         
@@ -275,9 +275,15 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             <p className="winner-name">
               {gameState.players[gameState.players.findIndex((p: any) => p.id === gameState.winner)]?.name} ganó
             </p>
-            <p className="bet-info">
-              Apuesta: ${gameState.betAmount} ARS
-            </p>
+            <div className="prize-details">
+              <p className="pot-info">
+                Pozo total: {gameState.currency === 'ARS' ? '$' : ''}{gameState.pot || (gameState.betAmount * gameState.players.length)} {gameState.currency}
+                {gameState.network && ` (${gameState.network})`}
+              </p>
+              <p className="winner-prize">
+                🎁 Premio: {gameState.currency === 'ARS' ? '$' : ''}{gameState.pot || (gameState.betAmount * gameState.players.length)} {gameState.currency}
+              </p>
+            </div>
             <button 
               className="btn-play-again"
               onClick={() => onGameEnd?.()}
