@@ -1,0 +1,33 @@
+{
+  "name": "lemon-uno-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm run build && node dist/index.js",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@types/cors": "^2.8.19",
+    "axios": "^1.6.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "ethers": "^6.9.2",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.2",
+    "redis": "^4.6.11",
+    "viem": "^2.40.3",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.20",
+    "@types/jest": "^29.5.7",
+    "@types/node": "^20.8.1",
+    "@types/ws": "^8.5.8",
+    "jest": "^29.7.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.1.6"
+  }
+}

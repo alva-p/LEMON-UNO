@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lemon UNO - Prueba en tu Celular</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+            background: linear-gradient(135deg, #1a1f3a 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #fff;
+        }
+
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background: rgba(26, 31, 58, 0.95);
+            border: 2px solid #00d4ff;
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 212, 255, 0.2);
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #00d4ff 0%, #00ff00 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            color: #aaa;
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+
+        .qr-section {
+            background: rgba(0, 212, 255, 0.1);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid #00d4ff;
+        }
+
+        .qr-code {
+            background: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            display: inline-block;
+            margin-bottom: 20px;
+        }
+
+        .qr-code img {
+            display: block;
+            width: 250px;
+            height: 250px;
+        }
+
+        .instructions {
+            text-align: left;
+            background: rgba(255, 107, 0, 0.1);
+            border-left: 4px solid #ff6b00;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 5px;
+        }
+
+        .instructions h3 {
+            color: #ff6b00;
+            margin-bottom: 10px;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            line-height: 1.8;
+        }
+
+        .instructions li {
+            margin-bottom: 10px;
+            color: #ddd;
+        }
+
+        .links-section {
+            margin-top: 30px;
+        }
+
+        .link-button {
+            display: block;
+            background: linear-gradient(135deg, #00d4ff 0%, #00ff00 100%);
+            color: #000;
+            padding: 15px 30px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: bold;
+            margin: 10px auto;
+            max-width: 300px;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            font-size: 1.1em;
+        }
+
+        .link-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0, 212, 255, 0.4);
+        }
+
+        .link-button.secondary {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+            border: 2px solid #00d4ff;
+        }
+
+        .link-button.secondary:hover {
+            background: rgba(0, 212, 255, 0.3);
+        }
+
+        .url-display {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #00d4ff;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #00d4ff;
+        }
+
+        .status {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .status-badge {
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .status-badge.ok {
+            background: rgba(0, 255, 0, 0.2);
+            color: #00ff00;
+            border: 1px solid #00ff00;
+        }
+
+        .status-badge.info {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+            border: 1px solid #00d4ff;
+        }
+
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+            margin: 30px 0;
+        }
+
+        .info-box {
+            background: rgba(0, 212, 255, 0.1);
+            border: 1px solid #00d4ff;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            line-height: 1.6;
+        }
+
+        .emoji {
+            font-size: 1.2em;
+            margin-right: 5px;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 25px;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+
+            .qr-code img {
+                width: 200px;
+                height: 200px;
+            }
+
+            .instructions ol {
+                margin-left: 15px;
+                font-size: 0.95em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 Lemon UNO</h1>
+        <p class="subtitle">Prueba la aplicación en tu celular</p>
+
+        <div class="status">
+            <div class="status-badge ok">✓ Backend Activo</div>
+            <div class="status-badge ok">✓ Frontend Activo</div>
+            <div class="status-badge info">📱 Listo para probar</div>
+        </div>
+
+        <div class="qr-section">
+            <p style="margin-bottom: 15px; color: #aaa;">
+                📸 Escanea con tu celular para probar la app:
+            </p>
+            <div class="qr-code" id="qrContainer">
+                <img id="qrImage" src="" alt="QR Code" />
+            </div>
+            <div class="url-display" id="urlDisplay"></div>
+        </div>
+
+        <div class="instructions">
+            <h3><span class="emoji">📋</span>Cómo probar:</h3>
+            <ol>
+                <li>Abre la cámara de tu celular</li>
+                <li>Escanea el código QR arriba</li>
+                <li>Se abrirá automáticamente en el navegador</li>
+                <li>¡Verás la app en vivo en tu celular!</li>
+            </ol>
+        </div>
+
+        <button class="link-button" onclick="window.open(getAppUrl(), '_blank')">
+            🔗 Abrir en navegador
+        </button>
+
+        <button class="link-button secondary" onclick="copyToClipboard()">
+            📋 Copiar enlace
+        </button>
+
+        <div class="divider"></div>
+
+        <div class="info-box">
+            <p><span class="emoji">🌐</span><strong>Tu IP local:</strong></p>
+            <p id="ipAddress" style="font-family: monospace; color: #00d4ff; margin-top: 10px;"></p>
+            <p style="color: #aaa; margin-top: 10px; font-size: 0.9em;">
+                Asegúrate de que tu celular esté conectado a la <strong>misma red WiFi</strong> que tu computadora
+            </p>
+        </div>
+
+        <div class="info-box" style="margin-top: 20px;">
+            <p><span class="emoji">💡</span><strong>Características para probar:</strong></p>
+            <ul style="list-style: none; margin-top: 10px; line-height: 1.8;">
+                <li>✓ SIWE Authentication (Firmar con billetera)</li>
+                <li>✓ Depósitos de dinero</li>
+                <li>✓ Retiros a billetera</li>
+                <li>✓ Jugar partidas con apuestas</li>
+                <li>✓ Compartir por deeplinks</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        function getAppUrl() {
+            // Your WiFi IP address
+            const localIP = '192.168.0.232';
+            return `http://${localIP}:5173/`;
+        }
+
+        function generateQRCode() {
+            const url = getAppUrl();
+            const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(url)}`;
+            
+            const qrImage = document.getElementById('qrImage');
+            qrImage.src = qrApiUrl;
+            
+            const urlDisplay = document.getElementById('urlDisplay');
+            urlDisplay.textContent = url;
+        }
+
+        function displayIPAddress() {
+            const ipAddress = document.getElementById('ipAddress');
+            ipAddress.textContent = '192.168.0.232:5173';
+        }
+
+        function copyToClipboard() {
+            const url = getAppUrl();
+            navigator.clipboard.writeText(url).then(() => {
+                alert('✓ Enlace copiado al portapapeles!\n\n' + url);
+            }).catch(() => {
+                alert('Enlace:\n' + url);
+            });
+        }
+
+        // Initialize on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            generateQRCode();
+            displayIPAddress();
+        });
+
+        // Refresh QR code every 10 seconds to ensure freshness
+        setInterval(generateQRCode, 10000);
+    </script>
+</body>
+</html>
