@@ -3,22 +3,39 @@ import { TransactionResult } from '@lemoncash/mini-app-sdk'
 import { isWebView } from '../lemon-mini-app-sdk'
 import { authenticate, ChainId } from '../lemon-mini-app-sdk'
 
-/**
- * Get the correct API URL based on environment
- */
+/* ============================================================
+   🔧 API URL – versión unificada y segura
+   ============================================================ */
 function getApiUrl(): string {
-  // Use 127.0.0.1 for localhost to ensure it works
-  if (window.location.hostname === 'localhost') {
-    return 'http://127.0.0.1:3001'
+  const host = window.location.hostname
+  const envUrl = import.meta.env.VITE_API_URL
+
+  // Producción con Vercel o dominio propio → SIEMPRE HTTPS
+  if (typeof envUrl === 'string' && envUrl.startsWith('https://')) {
+    return envUrl
   }
-  return `http://${window.location.hostname}:3001`
+
+  // Localhost → usar HTTP local
+  if (host === 'localhost') return 'http://localhost:3001'
+
+  // LAN → HTTP
+  if (
+    host.startsWith('192.168.') ||
+    host.startsWith('10.') ||
+    host.startsWith('172.')
+  ) {
+    return `http://${host}:3001`
+  }
+
+  // Fallback seguro
+  return 'https://api.alva-p.xyz'
 }
 
 export interface User {
   walletId: string
   address: string
   username: string
-  balance: number // ARS balance (mantener por compatibilidad)
+  balance: number
   balances: {
     ARS: number
     ETH: number
@@ -50,91 +67,82 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Check WebView on mount
+  /* ============================================================
+     🔄 Restaurar sesión + detectar Webview
+     ============================================================ */
   useEffect(() => {
-    const webViewStatus = isWebView()
-    setIsWebViewMode(webViewStatus)
+    setIsWebViewMode(isWebView())
 
-    // Try to restore session from localStorage
-    const savedUser = localStorage.getItem('lemon_user')
-    if (savedUser) {
+    const saved = localStorage.getItem('lemon_user')
+    if (saved) {
       try {
-        const parsed = JSON.parse(savedUser)
-        // Migrar formato antiguo al nuevo con balances multi-moneda
+        const parsed = JSON.parse(saved)
         if (!parsed.balances) {
           parsed.balances = {
             ARS: parsed.balance || 0,
             ETH: 0,
             USDT: 0,
-            USDC: 0,
+            USDC: 0
           }
         }
         setUser(parsed)
-      } catch (err) {
-        console.error('Failed to restore user session:', err)
-      }
+      } catch {}
     }
 
     setIsLoading(false)
   }, [])
 
-  /**
-   * Get nonce from backend
-   */
+  /* ============================================================
+     🔐 Obtener Nonce del Backend
+     ============================================================ */
   const getNonce = async (): Promise<string> => {
     const res = await fetch(`${getApiUrl()}/auth/nonce`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' }
     })
 
-    if (!res.ok) {
-      throw new Error('Failed to get nonce from backend')
-    }
+    if (!res.ok) throw new Error('No se pudo obtener nonce')
 
     const data = await res.json()
     return data.nonce
   }
 
-  /**
-   * Main login flow:
-   * 1. Get nonce from backend
-   * 2. Call SIWE authenticate with nonce
-   * 3. Verify signature on backend
-   */
+  /* ============================================================
+     🔐 Login completo (SIWE)
+     ============================================================ */
   const login = async () => {
     try {
       setIsLoading(true)
       setError(null)
 
-      // Step 1: Get nonce from backend
       const nonce = await getNonce()
-      console.log('📝 Nonce obtenido:', nonce.slice(0, 8) + '...')
+      console.log('Nonce:', nonce)
 
       const result = await authenticate({
         nonce,
-        chainId: ChainId.POLYGON_AMOY,
+        chainId: ChainId.POLYGON_AMOY
       })
 
       if (result.result === TransactionResult.FAILED) {
-        throw new Error(`Autenticación fallida: ${result.error?.message}`)
+        throw new Error(result.error?.message || 'Error en SIWE')
       }
 
       if (result.result === TransactionResult.CANCELLED) {
-        throw new Error('Autenticación cancelada por el usuario')
+        throw new Error('Operación cancelada')
       }
 
       const { wallet, signature, message } = result.data!
 
-      // Step 3: Verify signature on backend
+      // Verificación en backend
       const verifyRes = await fetch(`${getApiUrl()}/auth/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wallet, signature, message, nonce }),
+        body: JSON.stringify({ wallet, signature, message, nonce })
       })
 
       if (!verifyRes.ok) {
-        const errorData = await verifyRes.json()
-        throw new Error(errorData.error || 'Verificación de firma fallida')
+        const e = await verifyRes.json().catch(() => ({}))
+        throw new Error(e.error || 'Firma inválida')
       }
 
       const verifyData = await verifyRes.json()
@@ -148,19 +156,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ARS: verifyData.user.balance || 0,
           ETH: 0,
           USDT: 0,
-          USDC: 0,
+          USDC: 0
         },
         wins: verifyData.user.totalWins || 0,
-        points: verifyData.user.totalPoints || 0,
+        points: verifyData.user.totalPoints || 0
       }
 
       setUser(newUser)
       localStorage.setItem('lemon_user', JSON.stringify(newUser))
-      console.log('✅ Autenticación exitosa:', newUser.username)
+
+      console.log('LOGIN OK →', newUser.username)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Error desconocido'
-      setError(message)
-      console.error('Auth error:', message)
+      const msg = err instanceof Error ? err.message : 'Error desconocido'
+      console.error('Auth error:', msg)
+      setError(msg)
       throw err
     } finally {
       setIsLoading(false)
@@ -173,69 +182,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('lemon_user')
   }
 
-  const updateBalance = (
-    amount: number,
-    currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS'
-  ) => {
-    if (user) {
-      const updated: User = {
-        ...user,
-        balance: currency === 'ARS' ? amount : user.balance,
-        balances: {
-          ...user.balances,
-          [currency]: amount,
-        },
+  /* ============================================================
+     ⚡ Actualizar Balance
+     ============================================================ */
+  const updateBalance = (amount: number, currency = 'ARS') => {
+    if (!user) return
+    const updated: User = {
+      ...user,
+      balance: currency === 'ARS' ? amount : user.balance,
+      balances: {
+        ...user.balances,
+        [currency]: amount
       }
-      setUser(updated)
-      localStorage.setItem('lemon_user', JSON.stringify(updated))
     }
+    setUser(updated)
+    localStorage.setItem('lemon_user', JSON.stringify(updated))
   }
 
   const addWin = (points: number) => {
-    if (user) {
-      const updated: User = {
-        ...user,
-        wins: user.wins + 1,
-        points: user.points + points,
-      }
-      setUser(updated)
-      localStorage.setItem('lemon_user', JSON.stringify(updated))
+    if (!user) return
+    const updated: User = {
+      ...user,
+      wins: user.wins + 1,
+      points: user.points + points
     }
+    setUser(updated)
+    localStorage.setItem('lemon_user', JSON.stringify(updated))
   }
 
-  /**
-   * Faucet ARS: pide fichas de práctica al backend y sincroniza el saldo ARS
-   */
-  const faucetArs = async (amount: number = 1000): Promise<void> => {
-    if (!user) {
-      throw new Error('Debes iniciar sesión para recibir fichas ARS')
+  /* ============================================================
+     💧 Faucet ARS
+     ============================================================ */
+  const faucetArs = async (amount = 1000): Promise<void> => {
+    if (!user) throw new Error('Debes iniciar sesión')
+
+    const res = await fetch(`${getApiUrl()}/sandbox/ars/faucet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-wallet-id': user.walletId
+      },
+      body: JSON.stringify({ amount })
+    })
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || 'Faucet error')
     }
 
-    try {
-      const res = await fetch(`${getApiUrl()}/sandbox/ars/faucet`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-wallet-id': user.walletId,
-        },
-        body: JSON.stringify({ amount }),
-      })
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Error al solicitar fichas ARS')
-      }
-
-      const data = await res.json()
-      const newBalance = data.balance as number
-
-      // Actualizar el contexto con el saldo devuelto por el backend
-      updateBalance(newBalance, 'ARS')
-      console.log(`💧 Faucet ARS aplicado. Nuevo saldo ARS: ${newBalance}`)
-    } catch (err) {
-      console.error('Faucet ARS error:', err)
-      throw err
-    }
+    const data = await res.json()
+    updateBalance(data.balance, 'ARS')
   }
 
   return (
@@ -250,7 +246,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         updateBalance,
         addWin,
-        faucetArs,
+        faucetArs
       }}
     >
       {children}
@@ -258,10 +254,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   )
 }
 
-export const useAuth = (): AuthContextType => {
-  const context = useContext(AuthContext)
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider')
-  }
-  return context
+export const useAuth = () => {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
+  return ctx
 }
