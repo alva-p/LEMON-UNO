@@ -348,19 +348,33 @@ export const MiniApp: React.FC = () => {
   }, [screen])
 
   // Gate: permitir modo web si VITE_ENABLE_WEB=1
-  if (!webview && webview !== null) {
-    const allowWeb = (import.meta.env.VITE_ENABLE_WEB as string | undefined) === '1'
-    const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname.includes('192.168')
-    if (!allowWeb && !isDevelopment) {
-      return (
-        <div className="card">
-          <h2>Lemon UNO</h2>
-          <p>📱 This app only works inside Lemon Cash</p>
-          <p>Open it from the Lemon Cash Mini Apps section to play!</p>
-        </div>
-      )
-    }
+  // WebView Gate (corregido para producción real)
+if (!webview && webview !== null) {
+  const host = window.location.hostname;
+
+  const isLocal =
+    host === "localhost" ||
+    host.startsWith("192.168.") ||
+    host.startsWith("10.");
+
+  const isVercel = host.includes("vercel.app");
+  const isCustomDomain = host.endsWith("alva-p.xyz");
+
+  // Permitir web en desarrollo, Vercel y dominio propio
+  if (isLocal || isVercel || isCustomDomain) {
+    // permitir completamente
+  } else {
+    // bloquear solo fuera de entornos legítimos
+    return (
+      <div className="card">
+        <h2>Lemon UNO</h2>
+        <p>📱 This app only works inside Lemon Cash</p>
+        <p>Open it from the Lemon Cash Mini Apps section to play!</p>
+      </div>
+    );
   }
+}
+
 
   // Show auth screen if not authenticated
   if (!isAuthenticated) {
