@@ -24,11 +24,12 @@ const wss = new WebSocket.Server({ server })
 // Enable CORS for all routes
 app.use(
   cors({
-    origin: '*',
+    origin: process.env.FRONTEND_URL,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-wallet-id'],
   }),
 )
+
 
 // Middleware
 app.use(express.json())

@@ -15,18 +15,31 @@ const LeaderboardScreen = lazy(() => import('./screens/LeaderboardScreen').then(
  * Get the correct API URL based on environment
  */
 function getApiUrl(): string {
-  // Preferir variables de entorno de Vite si existen
+  // 1. Prioridad: variable de entorno de Vite en producción (Vercel)
   const envUrl = import.meta.env.VITE_API_URL as string | undefined
-  if (envUrl) return envUrl
-
-  if (window.location.hostname === 'localhost') {
-    return 'http://localhost:3001'
+  if (envUrl && envUrl.length > 0) {
+    return envUrl
   }
-  if (window.location.hostname.match(/^192\.168\./) || window.location.hostname.match(/^172\./) || window.location.hostname.match(/^10\./)) {
+
+  // 2. Entorno local (tu PC)
+  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+    return "http://localhost:3001"
+  }
+
+  // 3. Entorno LAN (si abrís desde celular o tablet)
+  if (
+    window.location.hostname.startsWith("192.168.") ||
+    window.location.hostname.startsWith("10.") ||
+    window.location.hostname.startsWith("172.")
+  ) {
     return `http://${window.location.hostname}:3001`
   }
-  return 'http://localhost:3001'
+
+  // 4. PRODUCCIÓN (siempre HTTPS)
+  // Si llega acá, significa Vercel u otro deploy
+  return import.meta.env.VITE_PUBLIC_FALLBACK_API_URL || "https://api.alva-p.xyz"
 }
+
 
 type Screen = 'lobby' | 'waiting' | 'game' | 'leaderboard'
 
