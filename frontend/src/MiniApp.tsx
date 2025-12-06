@@ -15,15 +15,16 @@ const LeaderboardScreen = lazy(() => import('./screens/LeaderboardScreen').then(
  * Get the correct API URL based on environment
  */
 function getApiUrl(): string {
-  // En desarrollo, usar la IP local si no estamos en localhost
+  // Preferir variables de entorno de Vite si existen
+  const envUrl = import.meta.env.VITE_API_URL as string | undefined
+  if (envUrl) return envUrl
+
   if (window.location.hostname === 'localhost') {
     return 'http://localhost:3001'
   }
-  // Si accedemos desde la red local (IP), usar la IP del servidor
   if (window.location.hostname.match(/^192\.168\./) || window.location.hostname.match(/^172\./) || window.location.hostname.match(/^10\./)) {
     return `http://${window.location.hostname}:3001`
   }
-  // Para otros casos, intentar localhost
   return 'http://localhost:3001'
 }
 
@@ -334,10 +335,11 @@ export const MiniApp: React.FC = () => {
     return () => clearInterval(interval)
   }, [screen])
 
+  // Gate: permitir modo web si VITE_ENABLE_WEB=1
   if (!webview && webview !== null) {
-    // En desarrollo, permitir acceso aunque no sea WebView
+    const allowWeb = (import.meta.env.VITE_ENABLE_WEB as string | undefined) === '1'
     const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname.includes('192.168')
-    if (!isDevelopment) {
+    if (!allowWeb && !isDevelopment) {
       return (
         <div className="card">
           <h2>Lemon UNO</h2>

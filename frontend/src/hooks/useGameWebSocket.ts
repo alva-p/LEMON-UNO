@@ -36,17 +36,31 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
       return
     }
 
-    // Get backend server address (same as REST API)
-    const getBackendUrl = () => {
-      if (window.location.hostname === 'localhost') {
-        return '127.0.0.1:3001'
+    // Prefer explicit VITE_WS_URL; else derive from VITE_API_URL or hostname
+    const viteWs = (import.meta.env.VITE_WS_URL as string | undefined) || ''
+    let wsUrl = viteWs
+    if (!wsUrl) {
+      const apiUrl = (import.meta.env.VITE_API_URL as string | undefined) || ''
+      if (apiUrl) {
+        // Convert http(s)://host to ws(s)://host
+        try {
+          const url = new URL(apiUrl)
+          const wsProto = url.protocol === 'https:' ? 'wss:' : 'ws:'
+          wsUrl = `${wsProto}//${url.host}`
+        } catch {
+          // Fallback to hostname
+          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+          const host = window.location.hostname === 'localhost' ? '127.0.0.1:3001' : `${window.location.hostname}:3001`
+          wsUrl = `${proto}//${host}`
+        }
+      } else {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const host = window.location.hostname === 'localhost' ? '127.0.0.1:3001' : `${window.location.hostname}:3001`
+        wsUrl = `${proto}//${host}`
       }
-      return `${window.location.hostname}:3001`
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const backendHost = getBackendUrl()
-    const wsUrl = `${protocol}//${backendHost}?gameId=${gameId}&playerIndex=${playerIndex}`
+    wsUrl = `${wsUrl}?gameId=${gameId}&playerIndex=${playerIndex}`
 
     console.log(`🔌 WebSocket: Connecting to ${wsUrl}`)
     const ws = new WebSocket(wsUrl)
