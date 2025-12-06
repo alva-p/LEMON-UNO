@@ -11,33 +11,33 @@ import { callSmartContract, TransactionResult, ChainId } from './lemon-mini-app-
 const GameScreen = lazy(() => import('./screens/GameScreen').then(m => ({ default: m.GameScreen })))
 const LeaderboardScreen = lazy(() => import('./screens/LeaderboardScreen').then(m => ({ default: m.LeaderboardScreen })))
 
-/**
- * Resolve backend API URL depending on environment
- */
 function getApiUrl(): string {
-  // 1) Producción / Vercel usa variable de entorno obligatoria
   const envUrl = import.meta.env.VITE_API_URL;
-  if (envUrl && envUrl.trim().length > 0) {
+
+  // 1) Producción / Vercel → DEBE ser https
+  if (typeof envUrl === "string" && envUrl.startsWith("https://")) {
     return envUrl;
   }
 
-  // 2) Entorno local (tu PC)
+  // 2) Localhost
   if (typeof window !== "undefined" && window.location.hostname === "localhost") {
     return "http://localhost:3001";
   }
 
-  // 3) Entorno LAN (solo si abrís desde tu WiFi)
+  // 3) Red local
+  const host = window.location.hostname;
   if (
-    window.location.hostname.startsWith("192.168.") ||
-    window.location.hostname.startsWith("10.") ||
-    window.location.hostname.startsWith("172.")
+    host.startsWith("192.168.") ||
+    host.startsWith("10.") ||
+    host.startsWith("172.")
   ) {
-    return `http://${window.location.hostname}:3001`;
+    return `http://${host}:3001`;
   }
 
-  // 4) Fallback seguro para producción
+  // 4) Producción fallback seguro
   return "https://api.alva-p.xyz";
 }
+
 
 
 type Screen = 'lobby' | 'waiting' | 'game' | 'leaderboard'
@@ -349,22 +349,20 @@ export const MiniApp: React.FC = () => {
 
   // Gate: permitir modo web si VITE_ENABLE_WEB=1
   // WebView Gate (corregido para producción real)
+/* ============================================================
+   🟢 WebView Gate corregido (permite ver en Vercel)
+   ============================================================ */
 if (!webview && webview !== null) {
   const host = window.location.hostname;
 
-  const isLocal =
+  const allowed =
     host === "localhost" ||
     host.startsWith("192.168.") ||
-    host.startsWith("10.");
+    host.startsWith("10.") ||
+    host.includes("vercel.app") ||
+    host.endsWith("alva-p.xyz");
 
-  const isVercel = host.includes("vercel.app");
-  const isCustomDomain = host.endsWith("alva-p.xyz");
-
-  // Permitir web en desarrollo, Vercel y dominio propio
-  if (isLocal || isVercel || isCustomDomain) {
-    // permitir completamente
-  } else {
-    // bloquear solo fuera de entornos legítimos
+  if (!allowed) {
     return (
       <div className="card">
         <h2>Lemon UNO</h2>
@@ -376,10 +374,21 @@ if (!webview && webview !== null) {
 }
 
 
-  // Show auth screen if not authenticated
-  if (!isAuthenticated) {
-    return <AuthScreen />
-  }
+  // Esperar a que se determine si es WebView o no
+if (webview === null) {
+  return (
+    <div className="screen">
+      <p>Cargando...</p>
+    </div>
+  )
+}
+
+// Si todavía no está autenticado
+if (!isAuthenticated) {
+  return <AuthScreen />
+}
+
+
 
   return (
     <div className="app">
