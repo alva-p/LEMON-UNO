@@ -7,9 +7,7 @@ declare global {
     VITE_SEPOLIA_USDT_ADDRESS: string;
     VITE_SEPOLIA_USDC_ADDRESS: string;
   }
-  interface ImportMeta {
-    env: ImportMetaEnv;
-  }
+  
 }
 /**
  * Lobby Screen - Create or join a game with enhanced UX

@@ -12,32 +12,31 @@ const GameScreen = lazy(() => import('./screens/GameScreen').then(m => ({ defaul
 const LeaderboardScreen = lazy(() => import('./screens/LeaderboardScreen').then(m => ({ default: m.LeaderboardScreen })))
 
 /**
- * Get the correct API URL based on environment
+ * Resolve backend API URL depending on environment
  */
 function getApiUrl(): string {
-  // 1. Prioridad: variable de entorno de Vite en producción (Vercel)
-  const envUrl = import.meta.env.VITE_API_URL as string | undefined
-  if (envUrl && envUrl.length > 0) {
-    return envUrl
+  // 1) Producción / Vercel usa variable de entorno obligatoria
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (envUrl && envUrl.trim().length > 0) {
+    return envUrl;
   }
 
-  // 2. Entorno local (tu PC)
+  // 2) Entorno local (tu PC)
   if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-    return "http://localhost:3001"
+    return "http://localhost:3001";
   }
 
-  // 3. Entorno LAN (si abrís desde celular o tablet)
+  // 3) Entorno LAN (solo si abrís desde tu WiFi)
   if (
     window.location.hostname.startsWith("192.168.") ||
     window.location.hostname.startsWith("10.") ||
     window.location.hostname.startsWith("172.")
   ) {
-    return `http://${window.location.hostname}:3001`
+    return `http://${window.location.hostname}:3001`;
   }
 
-  // 4. PRODUCCIÓN (siempre HTTPS)
-  // Si llega acá, significa Vercel u otro deploy
-  return import.meta.env.VITE_PUBLIC_FALLBACK_API_URL || "https://api.alva-p.xyz"
+  // 4) Fallback seguro para producción
+  return "https://api.alva-p.xyz";
 }
 
 
