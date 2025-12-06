@@ -108,8 +108,8 @@ export class DeeplinkGenerator {
    */
   static async shareDeeplink(
     deeplink: string,
-    title: string = 'Juega UNO CASH',
-    text: string = '¡Únete a mi juego en Lemon UNO!'
+    title: string = 'Juega Chain Table',
+    text: string = '¡Únete a mi juego en Chain Table!'
   ): Promise<boolean> {
     if (typeof navigator === 'undefined' || !navigator.share) {
       console.warn('⚠️  Share API no disponible en este navegador')

@@ -14,7 +14,7 @@ export const generateSignMessage = (address: string): SignMessage => {
   const timestamp = Date.now()
 
   return {
-    message: `Sign this message to authenticate with UNO CASH\n\nWallet: ${address}\nNonce: ${nonce}\nTimestamp: ${timestamp}`,
+    message: `Sign this message to authenticate with Chain Table\n\nWallet: ${address}\nNonce: ${nonce}\nTimestamp: ${timestamp}`,
     nonce,
     timestamp,
   }

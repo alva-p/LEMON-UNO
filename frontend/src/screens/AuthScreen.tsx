@@ -24,7 +24,7 @@ export const AuthScreen: React.FC = () => {
         {/* Header */}
         <div className="auth-header">
           <div className="auth-logo">🎴</div>
-          <h1>UNO CASH</h1>
+          <h1>Chain Table</h1>
           <p className="auth-subtitle">Juega • Apuesta • Gana</p>
         </div>
 
