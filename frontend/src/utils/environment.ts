@@ -2,8 +2,6 @@
  * Environment Detection - Determina el entorno de ejecución
  */
 
-import { webViewBridge } from './WebViewBridge'
-
 export enum Environment {
   WEBVIEW = 'WEBVIEW',
   BROWSER = 'BROWSER',
@@ -14,7 +12,7 @@ export enum Environment {
  * Obtiene el entorno actual
  */
 export function getEnvironment(): Environment {
-  if (webViewBridge.getIsWebView()) {
+  if (isWebView()) {
     return Environment.WEBVIEW
   }
 
@@ -31,7 +29,13 @@ export function getEnvironment(): Environment {
  * Replacement para isWebView() del SDK real
  */
 export function isWebView(): boolean {
-  return getEnvironment() === Environment.WEBVIEW
+  if (typeof window === 'undefined') return false
+  const ua = navigator.userAgent.toLowerCase()
+  // Detectar WebView real o simulado
+  return ua.includes('lemon') || ua.includes('webview') || !!(
+    (window as any).ReactNativeWebView &&
+    typeof (window as any).ReactNativeWebView.postMessage === 'function'
+  )
 }
 
 /**

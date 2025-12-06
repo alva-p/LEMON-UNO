@@ -5,6 +5,7 @@ import { AuthScreen } from './screens/AuthScreen'
 import { LobbyScreen } from './screens/LobbyScreen'
 import { useGameWebSocket, GameScreen as GameScreenEnum } from './hooks/useGameWebSocket'
 import { DeeplinkListener, DeeplinkAction } from './utils/deeplinks'
+import { callSmartContract, TransactionResult, ChainId } from './lemon-mini-app-sdk'
 
 // Lazy load GameScreen para mejorar performance
 const GameScreen = lazy(() => import('./screens/GameScreen').then(m => ({ default: m.GameScreen })))
@@ -16,10 +17,14 @@ const LeaderboardScreen = lazy(() => import('./screens/LeaderboardScreen').then(
 function getApiUrl(): string {
   // En desarrollo, usar la IP local si no estamos en localhost
   if (window.location.hostname === 'localhost') {
-    return 'http://localhost:3000'
+    return 'http://localhost:3001'
   }
-  // Si accedemos por IP (desde celular), reemplazar puerto 5173 con 3000
-  return `http://${window.location.hostname}:3000`
+  // Si accedemos desde la red local (IP), usar la IP del servidor
+  if (window.location.hostname.match(/^192\.168\./) || window.location.hostname.match(/^172\./) || window.location.hostname.match(/^10\./)) {
+    return `http://${window.location.hostname}:3001`
+  }
+  // Para otros casos, intentar localhost
+  return 'http://localhost:3001'
 }
 
 type Screen = 'lobby' | 'waiting' | 'game' | 'leaderboard'
@@ -89,12 +94,15 @@ export const MiniApp: React.FC = () => {
     isPublic: boolean, 
     password?: string,
     currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS',
-    network?: 'ETH' | 'BASE'
+    network?: 'ETH' | 'BASE' | 'SEPOLIA'
   ) => {
     try {
+      // Crear lobby en backend (ahora maneja ETH on-chain automáticamente)
       const body: any = { betAmount, maxPlayers, isPublic, password, currency }
       if (currency !== 'ARS' && network) {
-        body.network = network
+        // Map SEPOLIA to ETH for backend compatibility
+        const backendNetwork = network === 'SEPOLIA' ? 'ETH' : network
+        body.network = backendNetwork
       }
 
       const res = await fetch(`${getApiUrl()}/lobbies`, {
@@ -108,13 +116,29 @@ export const MiniApp: React.FC = () => {
 
       if (!res.ok) throw new Error('Error al crear lobby')
       const data = await res.json()
-      setGameId(data.lobby.id)
-      setCurrentLobby(data.lobby)
-      setLobbyPlayers(data.lobby.players || [])
-      setScreen('waiting')
+
+      // Si es ETH y hay txHash, mostrar confirmación
+      if (currency === 'ETH' && data.lobby.txHash) {
+        console.log('✅ Lobby ETH creado on-chain. TxHash:', data.lobby.txHash)
+        alert(`🎉 Lobby creado exitosamente!\n\nTransacción: ${data.lobby.txHash.slice(0, 10)}...${data.lobby.txHash.slice(-8)}\n\nEsperando confirmación de red...`)
+      }
+
+      // Para ARS, el backend retorna el lobby completo en data.lobby
+      // Buscar el índice del creador en la lista de jugadores
+      let idx = 0;
+      if (data.lobby && data.lobby.players) {
+        idx = data.lobby.players.findIndex((p: any) => p.id === walletId);
+      }
+      setPlayerIndex(idx >= 0 ? idx : 0);
+      setGameId(data.lobby.id);
+      setCurrentLobby(data.lobby);
+      setLobbyPlayers(data.lobby.players || []);
+      setScreen('waiting');
+
+      console.log('✅ Lobby creado completamente:', data.lobby.id);
     } catch (err) {
-      console.error('Error creating game:', err)
-      alert('Error al crear el juego')
+      console.error('Error creating game:', err);
+      alert(`Error al crear el juego: ${err instanceof Error ? err.message : 'Error desconocido'}`);
     }
   }
 
@@ -130,7 +154,10 @@ export const MiniApp: React.FC = () => {
         body: JSON.stringify({ password }),
       })
 
-      if (!res.ok) throw new Error('Error al unirse')
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Error desconocido' }))
+        throw new Error(errorData.error || 'Error al unirse')
+      }
       const data = await res.json()
       console.log(`✅ Joined successfully. Lobby:`, data.lobby)
       console.log(`   📊 Players in lobby: ${data.lobby.players?.length || 0}/${data.lobby.maxPlayers}`)
@@ -199,6 +226,41 @@ export const MiniApp: React.FC = () => {
     }
   }
 
+  // ⏭ NUEVO: handler para pasar turno después de robar
+  const handlePassTurn = async () => {
+    if (!gameId || playerIndex === null) {
+      console.warn('No gameId or playerIndex to pass turn')
+      return
+    }
+
+    try {
+      console.log('⏭ Passing turn for player', playerIndex, 'in game', gameId)
+
+      // Ajustá la ruta si tu backend usa otro endpoint (por ejemplo /games/:id/pass)
+      const res = await fetch(`${getApiUrl()}/games/${gameId}/pass-turn`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-id': walletId,
+        },
+        body: JSON.stringify({ playerIndex }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        console.error('Error passing turn:', data)
+        alert(data.error || 'Error al pasar el turno')
+        return
+      }
+
+      // No hace falta setear gameState acá: el WebSocket enviará el nuevo estado
+      console.log('✅ Turn passed successfully')
+    } catch (err) {
+      console.error('Network error passing turn:', err)
+      alert('Error de red al pasar el turno')
+    }
+  }
+
   // Fetch current lobby details when in waiting screen
   useEffect(() => {
     if (screen !== 'waiting' || !gameId) {
@@ -238,7 +300,7 @@ export const MiniApp: React.FC = () => {
     return () => clearInterval(interval)
   }, [screen, gameId])
 
-  // Log when lobbyPlayers changes
+  // Log cuando cambia lobbyPlayers
   useEffect(() => {
     console.log(`👥 Lobby players updated: ${lobbyPlayers.length}/${currentLobby?.maxPlayers || 2}`)
     if (screen === 'waiting') {
@@ -249,7 +311,7 @@ export const MiniApp: React.FC = () => {
     }
   }, [lobbyPlayers, currentLobby, screen])
 
-  // Fetch lobbies - more frequently when on lobby screen
+  // Fetch lobbies - más frecuente en pantalla de lobby
   useEffect(() => {
     const fetchLobbies = async () => {
       try {
@@ -404,7 +466,8 @@ export const MiniApp: React.FC = () => {
             playerIndex={playerIndex ?? 0}
             onPlayCard={playCard}
             onDrawCard={drawCard}
-            connected={connected}
+            onPassTurn={handlePassTurn}
+            connected={connected} 
             onGameEnd={() => {
               setScreen('lobby')
               setGameId(null)
@@ -444,7 +507,7 @@ export const MiniApp: React.FC = () => {
         </div>
       )}
 
-      {wsError && <div className="error-banner">{wsError}</div>}
+      {/* Mensaje de error eliminado por requerimiento */}
     </div>
   )
 }

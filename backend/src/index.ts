@@ -2,25 +2,33 @@ import express, { Request, Response } from 'express'
 import http from 'http'
 import WebSocket from 'ws'
 import cors from 'cors'
-import { createPublicClient, http as viemHttp, parseEther } from 'viem'
+import { createPublicClient, http as viemHttp } from 'viem'
 import { polygonAmoy } from 'viem/chains'
 import { GameService } from './services/GameService'
 import { UserService } from './services/UserService'
 import { TransactionService } from './services/TransactionService'
 import { NonceService } from './services/NonceService'
-import { GameWebSocketHandler, WSMessage, WSMessageType } from './api/websocket'
+import { GameWebSocketHandler, WSMessage } from './api/websocket'
 import { getPlayableCards } from './game/cards'
+import { ContractService } from './services/ContractService'
+import 'dotenv/config'
+
+// DB y stats
+import { testDbConnection, pool } from './db'
+import { getMatchStatsForWallet, saveMatchResult } from './matchStats'
 
 const app = express()
 const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 // Enable CORS for all routes
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-wallet-id'],
-}))
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'x-wallet-id'],
+  }),
+)
 
 // Middleware
 app.use(express.json())
@@ -30,6 +38,10 @@ const gameService = new GameService()
 const userService = new UserService()
 const transactionService = new TransactionService(userService)
 const nonceService = new NonceService()
+const contractService = new ContractService('ETH')
+
+// Variable to throttle /lobbies log
+let lastLobbiesLogTime = 0
 
 // Viem client for SIWE verification
 const publicClient = createPublicClient({
@@ -40,15 +52,99 @@ const publicClient = createPublicClient({
 // Map of game handlers
 const gameHandlers: Map<string, GameWebSocketHandler> = new Map()
 
-app.use(express.json())
-
 // ============ REST API ============
+
+/**
+ * Rankings de jugadores (usa player_stats / players)
+ * GET /rankings?limit=10
+ * (Este endpoint queda como estaba, basado en player_stats)
+ */
+app.get('/rankings', async (req: Request, res: Response) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string) : 10
+  try {
+    const result = await pool.query(
+      `SELECT p.username, p.wallet_address, ps.games_won, ps.games_played,
+              ps.total_won_ars, ps.total_won_eth, ps.total_won_usdt, ps.total_won_usdc
+       FROM player_stats ps
+       JOIN players p ON p.id = ps.player_id
+       ORDER BY ps.games_won DESC, ps.games_played DESC
+       LIMIT $1`,
+      [limit],
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('Error fetching rankings:', err)
+    res.status(500).json({ error: 'Error fetching rankings' })
+  }
+})
 
 /**
  * Health check
  */
 app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok' })
+})
+
+/**
+ * DEBUG: insertar una partida de ejemplo en la BD
+ * POST /debug/seed-game
+ */
+app.post('/debug/seed-game', async (req: Request, res: Response) => {
+  try {
+    const players = [
+      '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222',
+    ]
+
+    const now = new Date()
+
+    await saveMatchResult({
+      gameId: '11111111-1111-1111-1111-111111111111', // UUID válido
+      winnerWallet: players[0],
+      pot: 1000,
+      betAmount: 500,
+      currency: 'ARS',
+      network: undefined,
+      players,
+      createdAt: now,
+      startedAt: now,
+      finishedAt: now,
+    })
+
+    res.json({ ok: true, message: 'Demo game inserted', players })
+  } catch (err) {
+    console.error('Error in /debug/seed-game:', err)
+    res.status(500).json({ error: 'Failed to seed demo game' })
+  }
+})
+
+/**
+ * Faucet ARS sandbox
+ * POST /sandbox/ars/faucet
+ * Headers: { "x-wallet-id": string }
+ * Body: { amount?: number }
+ * Devuelve: { balance: number }
+ */
+app.post('/sandbox/ars/faucet', (req: Request, res: Response) => {
+  let walletId = (req.headers['x-wallet-id'] as string) || 'anon'
+
+  const { amount } = req.body ?? {}
+  const creditAmount =
+    typeof amount === 'number' && amount > 0
+      ? amount
+      : 1000 // por defecto, 1000 "fichas" ARS de práctica
+
+  try {
+    gameService.creditArsSandbox(walletId, creditAmount)
+    const newBalance = gameService.getArsSandboxBalance(walletId)
+
+    console.log(`💧 Faucet ARS → ${walletId} +${creditAmount}. Nuevo saldo: ${newBalance}`)
+
+    res.json({ balance: newBalance })
+  } catch (err) {
+    console.error('Error en faucet ARS:', err)
+    res.status(500).json({ error: 'No se pudieron asignar fichas ARS' })
+  }
 })
 
 /**
@@ -78,7 +174,9 @@ app.post('/auth/verify', async (req: Request, res: Response) => {
 
     // Validate input
     if (!wallet || !signature || !message || !nonce) {
-      return res.status(400).json({ error: 'Missing wallet, signature, message, or nonce' })
+      return res
+        .status(400)
+        .json({ error: 'Missing wallet, signature, message, or nonce' })
     }
 
     if (!wallet.startsWith('0x') || wallet.length !== 42) {
@@ -98,7 +196,7 @@ app.post('/auth/verify', async (req: Request, res: Response) => {
 
     // Mock signature for development (signature = 0x + 'ab' repeated)
     const isMockSignature = signature === '0x' + 'ab'.repeat(65)
-    
+
     if (isMockSignature) {
       // En desarrollo, aceptar firmas mock
       console.log('✅ Mock signature detectada - aceptando en desarrollo')
@@ -157,71 +255,182 @@ app.post('/auth/verify', async (req: Request, res: Response) => {
 })
 
 /**
- * Create a new lobby
- * POST /lobbies
- * Body: { betAmount: number, isPublic: boolean, password?: string, maxPlayers?: number, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC', network?: 'ETH' | 'BASE' }
+ * Create a new lobby on-chain (contrato directo)
+ * POST /lobby/create
  */
-app.post('/lobbies', (req: Request, res: Response) => {
+app.post('/lobby/create', async (req: Request, res: Response) => {
+  try {
+    const { token, entryFee, maxPlayers } = req.body
+    if (!token || !entryFee || !maxPlayers) {
+      return res.status(400).json({ error: 'Missing required fields' })
+    }
+
+    // Autenticar sesión con billetera MOCK (desarrollo)
+    const MOCK_WALLETS = [
+      '0x1Ed17b06961B9B8DE78Ee924BcDaBC003aaE1867',
+      '0x2aEb1aB4d3d5A2Fe3bC8D1e5F9c3D7B1A9E5F2c4',
+      '0x3B9cD5f2E8a7C9D1B4f5E8a2C6D9e1F3a5B8C2d4',
+    ]
+    let walletId = req.headers['x-wallet-id'] as string
+    if (!walletId || walletId === 'anon') {
+      walletId = MOCK_WALLETS[0]
+    }
+    if (!MOCK_WALLETS.includes(walletId)) {
+      return res.status(401).json({
+        error: 'La dirección de la sesión no es una billetera MOCK válida.',
+      })
+    }
+
+    // Rama fiat ARS: usar GameService (sandbox, sin contrato)
+    if (token === 'ARS') {
+      try {
+        const gameLobby = await gameService.createLobby(
+          walletId,
+          Number(entryFee),
+          true,
+          maxPlayers,
+          undefined,
+          'ARS',
+        )
+        return res.json({
+          lobby: {
+            ...gameLobby,
+            contractLobbyId: gameLobby.contractLobbyId?.toString(),
+          },
+        })
+      } catch (err) {
+        console.error('Error creando lobby ARS (contract route):', err)
+        return res.status(500).json({ error: (err as Error).message })
+      }
+    }
+
+    // Crypto: crear lobby on-chain via ContractService
+    const entryFeeBigInt = BigInt(entryFee)
+    const lobbyId = await contractService.createLobby(token, entryFeeBigInt, maxPlayers)
+    if (!lobbyId) {
+      return res.status(500).json({ error: 'Lobby creation failed' })
+    }
+    res.json({ lobbyId })
+  } catch (err: any) {
+    if (err.message && err.message.includes('insufficient funds')) {
+      return res.status(400).json({
+        error: 'Fondos insuficientes para crear el lobby. Verifica tu balance y gas.',
+      })
+    }
+    res.status(500).json({ error: err.message || 'Internal error' })
+  }
+})
+
+/**
+ * Create a new lobby (API principal usada por la mini-app)
+ * POST /lobbies
+ */
+app.post('/lobbies', async (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
   const { betAmount, isPublic, password, maxPlayers = 2, currency = 'ARS', network } = req.body
 
-  // Validate currency first
+  // Validar moneda
   const validCurrencies = ['ARS', 'ETH', 'USDT', 'USDC']
   if (!validCurrencies.includes(currency)) {
-    return res.status(400).json({ error: 'Invalid currency. Must be ARS, ETH, USDT, or USDC' })
+    return res
+      .status(400)
+      .json({ error: 'Invalid currency. Must be ARS, ETH, USDT, or USDC' })
   }
 
-  // Validate bet amount based on currency
-  let minBet = 100
-  let maxBet = 100000
-  
-  switch (currency) {
-    case 'ARS':
-      minBet = 100
-      maxBet = 100000
-      break
-    case 'ETH':
+  // Validar monto de apuesta:
+  if (currency === 'ARS') {
+    if (betAmount == null || betAmount < 0) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid bet amount for ARS. Must be >= 0' })
+    }
+  } else {
+    let minBet = 0
+    let maxBet = 0
+    if (currency === 'ETH') {
       minBet = 0.001
       maxBet = 10
-      break
-    case 'USDT':
-    case 'USDC':
+    }
+    if (currency === 'USDT' || currency === 'USDC') {
       minBet = 1
       maxBet = 10000
-      break
+    }
+
+    if (!betAmount || betAmount < minBet || betAmount > maxBet) {
+      return res.status(400).json({
+        error: `Invalid bet amount for ${currency}. Min: ${minBet}, Max: ${maxBet}`,
+      })
+    }
   }
 
-  if (!betAmount || betAmount < minBet || betAmount > maxBet) {
-    return res.status(400).json({ 
-      error: `Invalid bet amount for ${currency}. Min: ${minBet}, Max: ${maxBet}` 
+  // Para ARS no se requiere network ni contrato (sandbox)
+  if (currency === 'ARS') {
+    try {
+      const lobby = await gameService.createLobby(
+        walletId,
+        betAmount,
+        isPublic,
+        maxPlayers,
+        password,
+        currency,
+      )
+      console.log(`🎮 Nuevo lobby ARS creado: ${lobby.id}`)
+      return res.json({
+        lobby: {
+          ...lobby,
+          contractLobbyId: lobby.contractLobbyId?.toString(),
+        },
+      })
+    } catch (err) {
+      console.error('Error creando lobby ARS:', err)
+      return res.status(500).json({ error: (err as Error).message })
+    }
+  }
+
+  // Para crypto, validar network
+  const validNetworks = ['ETH', 'BASE']
+  if (!network || !validNetworks.includes(network)) {
+    return res
+      .status(400)
+      .json({ error: 'Network required for crypto. Must be ETH or BASE' })
+  }
+
+  try {
+    const lobby = await gameService.createLobby(
+      walletId,
+      betAmount,
+      isPublic,
+      maxPlayers,
+      password,
+      currency,
+      network,
+    )
+    console.log(`🎮 New lobby created: ${lobby.id}`)
+    console.log(
+      `   Creator: ${walletId}, Bet: ${betAmount} ${currency}${
+        network ? ` (${network})` : ''
+      }, Public: ${isPublic}`,
+    )
+    res.json({
+      lobby: {
+        id: lobby.id,
+        creator: lobby.creator,
+        creatorId: lobby.creatorId,
+        betAmount: lobby.betAmount,
+        currency: lobby.currency,
+        network: lobby.network,
+        isPublic: lobby.isPublic,
+        maxPlayers: lobby.maxPlayers,
+        players: lobby.players,
+        createdAt: lobby.createdAt,
+        contractLobbyId: lobby.contractLobbyId?.toString(),
+        txHash: lobby.txHash,
+      },
     })
+  } catch (err) {
+    console.error('Error creating lobby:', err)
+    res.status(500).json({ error: (err as Error).message })
   }
-
-  // Validate network for crypto
-  if (currency !== 'ARS') {
-    const validNetworks = ['ETH', 'BASE']
-    if (!network || !validNetworks.includes(network)) {
-      return res.status(400).json({ error: 'Network required for crypto. Must be ETH or BASE' })
-    }
-  }
-
-  const lobby = gameService.createLobby(walletId, betAmount, isPublic, maxPlayers, password, currency, network)
-  console.log(`🎮 New lobby created: ${lobby.id}`)
-  console.log(`   Creator: ${walletId}, Bet: ${betAmount} ${currency}${network ? ` (${network})` : ''}, Public: ${isPublic}`)
-  res.json({ 
-    lobby: {
-      id: lobby.id,
-      creator: lobby.creator,
-      creatorId: lobby.creatorId,
-      betAmount: lobby.betAmount,
-      currency: lobby.currency,
-      network: lobby.network,
-      isPublic: lobby.isPublic,
-      maxPlayers: lobby.maxPlayers,
-      players: lobby.players,
-      createdAt: lobby.createdAt,
-    }
-  })
 })
 
 /**
@@ -230,12 +439,23 @@ app.post('/lobbies', (req: Request, res: Response) => {
  */
 app.get('/lobbies', (req: Request, res: Response) => {
   const lobbies = gameService.getAllLobbies()
-  console.log(`📋 GET /lobbies - Found ${lobbies.length} lobbies`)
-  lobbies.forEach(l => {
-    console.log(`   - ${l.id} (creator: ${l.creator}, bet: $${l.betAmount}, players: ${l.players.length})`)
-  })
-  // Format response to match frontend expectations
-  res.json({ lobbies })
+  const now = Date.now()
+
+  if (now - lastLobbiesLogTime > 5000) {
+    console.log(`📋 GET /lobbies - Found ${lobbies.length} lobbies`)
+    lobbies.forEach((l) => {
+      console.log(
+        `   - ${l.id} (creator: ${l.creator}, bet: $${l.betAmount}, players: ${l.players.length})`,
+      )
+    })
+    lastLobbiesLogTime = now
+  }
+
+  const formattedLobbies = lobbies.map((lobby) => ({
+    ...lobby,
+    contractLobbyId: lobby.contractLobbyId?.toString(),
+  }))
+  res.json({ lobbies: formattedLobbies })
 })
 
 /**
@@ -245,22 +465,28 @@ app.get('/lobbies', (req: Request, res: Response) => {
 app.get('/lobbies/:lobbyId', (req: Request, res: Response) => {
   const lobbyId = req.params.lobbyId
   console.log(`🔍 GET lobby ${lobbyId}`)
-  
+
   const lobby = gameService.getLobby(lobbyId)
   if (!lobby) {
     console.log(`❌ Lobby no encontrado: ${lobbyId}`)
-    console.log(`📋 Lobbies disponibles:`, Array.from(gameService.getAllLobbies().map(l => l.id)))
+    console.log(
+      `📋 Lobbies disponibles:`,
+      Array.from(gameService.getAllLobbies().map((l) => l.id)),
+    )
     return res.status(404).json({ error: 'Lobby not found' })
   }
-  
+
   console.log(`✅ Lobby encontrado con ${lobby.players.length} jugadores`)
-  res.json({ lobby })
+  const formattedLobby = {
+    ...lobby,
+    contractLobbyId: lobby.contractLobbyId?.toString(),
+  }
+  res.json({ lobby: formattedLobby })
 })
 
 /**
  * Join lobby
  * POST /lobbies/:lobbyId/join
- * Body: { password?: string }
  */
 app.post('/lobbies/:lobbyId/join', (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
@@ -277,7 +503,13 @@ app.post('/lobbies/:lobbyId/join', (req: Request, res: Response) => {
 
   const lobby = gameService.getLobby(lobbyId)
   console.log(`✅ Join exitoso. Lobby ahora tiene ${lobby?.players.length} jugadores`)
-  res.json({ lobby })
+  const formattedLobby = lobby
+    ? {
+        ...lobby,
+        contractLobbyId: lobby.contractLobbyId?.toString(),
+      }
+    : null
+  res.json({ lobby: formattedLobby })
 })
 
 /**
@@ -287,20 +519,23 @@ app.post('/lobbies/:lobbyId/join', (req: Request, res: Response) => {
 app.post('/lobbies/:lobbyId/start', (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
   const lobbyId = req.params.lobbyId
-  
+
   console.log(`🎬 POST /lobbies/${lobbyId}/start requested by ${walletId}`)
-  
+
   const lobby = gameService.getLobby(lobbyId)
-  
-  // Only creator can start the game
+
   if (!lobby) {
     console.log(`❌ Lobby not found: ${lobbyId}`)
     return res.status(404).json({ error: 'Lobby not found' })
   }
-  
+
   if (lobby.creatorId !== walletId) {
-    console.log(`❌ Only creator can start. Creator: ${lobby.creatorId}, Requester: ${walletId}`)
-    return res.status(403).json({ error: 'Only the lobby creator can start the game' })
+    console.log(
+      `❌ Only creator can start. Creator: ${lobby.creatorId}, Requester: ${walletId}`,
+    )
+    return res
+      .status(403)
+      .json({ error: 'Only the lobby creator can start the game' })
   }
 
   console.log(`🚀 Starting game from lobby ${lobbyId}`)
@@ -321,7 +556,7 @@ app.post('/lobbies/:lobbyId/start', (req: Request, res: Response) => {
  */
 app.post('/lobbies/:lobbyId/cancel', (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
-  
+
   const result = gameService.cancelLobby(req.params.lobbyId, walletId)
   if (!result.success) {
     return res.status(400).json({ error: result.error })
@@ -331,45 +566,146 @@ app.post('/lobbies/:lobbyId/cancel', (req: Request, res: Response) => {
 })
 
 /**
- * Get points leaderboard
+ * Get points leaderboard (DB)
  * GET /leaderboards/points?limit=50
+ *
+ * Basado en:
+ *  - match_players
+ *  - matches
+ *  - players (para username, si existe)
  */
-app.get('/leaderboards/points', (req: Request, res: Response) => {
+app.get('/leaderboards/points', async (req: Request, res: Response) => {
   const limit = req.query.limit ? parseInt(req.query.limit as string) : 50
-  const leaderboard = userService.getPointsLeaderboard(limit)
-  
-  // Format response with rank
-  const formattedLeaderboard = leaderboard.map((user, index) => ({
-    rank: index + 1,
-    userId: user.id,
-    username: user.username,
-    points: user.totalPoints,
-    wins: user.totalWins,
-    losses: user.totalLosses,
-  }))
-  
-  res.json(formattedLeaderboard)
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        LOWER(mp.wallet_address) AS wallet,
+        COALESCE(
+          p.username,
+          'Player_' || SUBSTRING(LOWER(mp.wallet_address) FROM 3 FOR 6)
+        ) AS username,
+        COUNT(*) AS games_played,
+        COUNT(*) FILTER (WHERE mp.is_winner) AS wins
+      FROM match_players mp
+      JOIN matches m ON mp.match_id = m.id
+      LEFT JOIN players p ON LOWER(p.wallet_address) = LOWER(mp.wallet_address)
+      GROUP BY wallet, username
+      ORDER BY wins DESC, games_played DESC
+      LIMIT $1
+      `,
+      [limit],
+    )
+
+    const rows = result.rows
+
+    const leaderboard = rows.map((row: any, index: number) => {
+      const gamesPlayed = Number(row.games_played) || 0
+      const wins = Number(row.wins) || 0
+      const losses = gamesPlayed - wins
+
+      return {
+        rank: index + 1,
+        userId: row.wallet,
+        username: row.username,
+        wins,
+        points: wins, // Por ahora, puntos = partidas ganadas
+        losses,
+      }
+    })
+
+    res.json(leaderboard)
+  } catch (err) {
+    console.error('Error fetching points leaderboard:', err)
+    res.status(500).json({ error: 'Error fetching points leaderboard' })
+  }
 })
 
 /**
- * Get money leaderboard
+ * Get money leaderboard (DB)
  * GET /leaderboards/money?limit=50
+ *
+ * Basado en:
+ *  - match_players (prize)
+ *  - matches
+ *  - players (para username)
  */
-app.get('/leaderboards/money', (req: Request, res: Response) => {
+app.get('/leaderboards/money', async (req: Request, res: Response) => {
   const limit = req.query.limit ? parseInt(req.query.limit as string) : 50
-  const leaderboard = userService.getMoneyLeaderboard(limit)
-  
-  // Format response with rank
-  const formattedLeaderboard = leaderboard.map((user, index) => ({
-    rank: index + 1,
-    userId: user.id,
-    username: user.username,
-    earnings: user.totalEarnings,
-    wins: user.totalWins,
-    losses: user.totalLosses,
-  }))
-  
-  res.json(formattedLeaderboard)
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        LOWER(p.wallet_address) AS wallet,
+        COALESCE(p.username, 'Player_' || SUBSTRING(LOWER(p.wallet_address) FROM 3 FOR 6)) AS username,
+        COALESCE(ps.games_won, 0) AS wins,
+        COALESCE(ps.games_played, 0) AS games_played,
+        COALESCE(ps.total_won_ars, 0)   AS earnings_ars,
+        COALESCE(ps.total_won_eth, 0)   AS earnings_eth,
+        COALESCE(ps.total_won_usdt, 0)  AS earnings_usdt,
+        COALESCE(ps.total_won_usdc, 0)  AS earnings_usdc,
+        (COALESCE(ps.total_won_ars,0) + COALESCE(ps.total_won_eth,0) + COALESCE(ps.total_won_usdt,0) + COALESCE(ps.total_won_usdc,0)) AS total_earnings
+      FROM players p
+      LEFT JOIN player_stats ps ON ps.player_id = p.id
+      ORDER BY total_earnings DESC NULLS LAST, wins DESC, username ASC
+      LIMIT $1
+      `,
+      [limit],
+    )
+
+    const rows = result.rows
+
+    const leaderboard = rows.map((row: any, index: number) => {
+      const wins = Number(row.wins) || 0
+      const gamesPlayed = Number(row.games_played) || 0
+      const losses = Math.max(gamesPlayed - wins, 0)
+      const earningsARS = Number(row.earnings_ars) || 0
+      const earningsETH = Number(row.earnings_eth) || 0
+      const earningsUSDT = Number(row.earnings_usdt) || 0
+      const earningsUSDC = Number(row.earnings_usdc) || 0
+      const earnings = earningsARS + earningsETH + earningsUSDT + earningsUSDC
+      return {
+        rank: index + 1,
+        userId: row.wallet,
+        username: row.username,
+        wins,
+        losses,
+        earnings,
+        earningsARS,
+        earningsETH,
+        earningsUSDT,
+        earningsUSDC,
+      }
+    })
+
+    res.json(leaderboard)
+  } catch (err) {
+    console.error('Error fetching money leaderboard:', err)
+    res.status(500).json({ error: 'Error fetching money leaderboard' })
+  }
+})
+
+/**
+ * Player match stats (DB)
+ * GET /stats/:walletId
+ */
+app.get('/stats/:walletId', async (req: Request, res: Response) => {
+  const { walletId } = req.params
+
+  try {
+    const stats = await getMatchStatsForWallet(walletId)
+
+    if (!stats) {
+      return res.status(404).json({ error: 'No stats found for this wallet yet' })
+    }
+
+    return res.json(stats)
+  } catch (err) {
+    console.error('Error fetching match stats:', err)
+    return res.status(500).json({ error: 'Error fetching match stats' })
+  }
 })
 
 /**
@@ -381,22 +717,63 @@ app.get('/games/:gameId', (req: Request, res: Response) => {
   if (!gameState || gameState.discardPile.length === 0) {
     return res.status(404).json({ error: 'Game not found' })
   }
-  
-  // Add playable cards for the current player
+
   const currentPlayer = gameState.players[gameState.currentPlayerIndex]
   const topCard = gameState.discardPile[gameState.discardPile.length - 1]
-  const playableCardIds = topCard && currentPlayer
-    ? getPlayableCards(currentPlayer.hand, topCard, gameState.currentWildColor, gameState.pendingDrawCount, gameState.pendingDrawType) 
-    : []
-  
+  const playableCardIds =
+    topCard && currentPlayer
+      ? getPlayableCards(
+          currentPlayer.hand,
+          topCard,
+          gameState.currentWildColor,
+          gameState.pendingDrawCount,
+          gameState.pendingDrawType,
+        )
+      : []
+
   res.json({
     ...gameState,
-    playableCardIds, // IDs of cards that can be played
+    playableCardIds,
   })
 })
 
 /**
- * Get leaderboard
+ * Nuevo: pasar turno
+ * POST /games/:gameId/pass-turn
+ */
+app.post('/games/:gameId/pass-turn', (req: Request, res: Response) => {
+  const { gameId } = req.params
+  const { playerIndex } = req.body
+
+  if (typeof playerIndex !== 'number') {
+    return res.status(400).json({ error: 'playerIndex is required and must be a number' })
+  }
+
+  const gameState = gameService.getGameState(gameId)
+  if (!gameState) {
+    return res.status(404).json({ error: 'Game not found' })
+  }
+
+  if (gameState.currentPlayerIndex !== playerIndex) {
+    return res.status(400).json({ error: 'Not your turn' })
+  }
+
+  const result = gameService.passTurn(gameId, playerIndex)
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error })
+  }
+
+  const updatedState = gameService.getGameState(gameId)
+
+  return res.json({
+    success: true,
+    gameState: updatedState,
+  })
+})
+
+/**
+ * Get leaderboard (in-memory, legacy)
  * GET /leaderboard?limit=50
  */
 app.get('/leaderboard', (req: Request, res: Response) => {
@@ -409,7 +786,7 @@ app.get('/leaderboard', (req: Request, res: Response) => {
       wins: user.totalWins,
       points: user.totalPoints,
       balance: user.balance,
-    }))
+    })),
   )
 })
 
@@ -432,11 +809,13 @@ setInterval(() => {
   gameHandlers.forEach((handler) => {
     handler.broadcastGameState()
   })
-}, 1000) // Update every 1 second
+}, 1000)
 
 wss.on('connection', (ws: WebSocket, req) => {
   const gameId = new URL(req.url!, `http://${req.headers.host}`).searchParams.get('gameId')
-  const playerIdStr = new URL(req.url!, `http://${req.headers.host}`).searchParams.get('playerIndex')
+  const playerIdStr = new URL(req.url!, `http://${req.headers.host}`).searchParams.get(
+    'playerIndex',
+  )
 
   if (!gameId || !playerIdStr) {
     ws.close(1000, 'Missing gameId or playerIndex')
@@ -445,7 +824,6 @@ wss.on('connection', (ws: WebSocket, req) => {
 
   const playerIndex = parseInt(playerIdStr)
 
-  // Get or create game handler
   let handler = gameHandlers.get(gameId)
   if (!handler) {
     handler = new GameWebSocketHandler(gameService, gameId)
@@ -474,10 +852,19 @@ wss.on('connection', (ws: WebSocket, req) => {
 
 // ============ START SERVER ============
 
-const PORT = process.env.PORT || 3000
-server.listen(PORT, () => {
+const PORT = parseInt(process.env.PORT || '3001', 10)
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🎮 Lemon UNO Server running on port ${PORT}`)
   console.log(`   HTTP: http://localhost:${PORT}`)
+  console.log(`   HTTP: http://0.0.0.0:${PORT}`)
   console.log(`   WebSocket: ws://localhost:${PORT}`)
-})
 
+  // Check de conexión a la DB al arrancar
+  testDbConnection()
+    .then(() => {
+      console.log('✅ Database connection OK')
+    })
+    .catch((err) => {
+      console.error('❌ Database connection failed:', err)
+    })
+})

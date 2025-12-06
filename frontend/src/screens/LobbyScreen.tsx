@@ -1,23 +1,36 @@
+// Vite env types for TypeScript
+declare global {
+  interface ImportMetaEnv {
+    VITE_TEST_USDT_ADDRESS: string;
+    VITE_TEST_USDC_ADDRESS: string;
+    VITE_ETH_ADDRESS: string;
+    VITE_SEPOLIA_USDT_ADDRESS: string;
+    VITE_SEPOLIA_USDC_ADDRESS: string;
+  }
+  interface ImportMeta {
+    env: ImportMetaEnv;
+  }
+}
 /**
  * Lobby Screen - Create or join a game with enhanced UX
  */
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { DepositModal } from '../components/DepositModal'
 import { WithdrawModal } from '../components/WithdrawModal'
 
 function getApiUrl(): string {
   if (window.location.hostname === 'localhost') {
-    return 'http://localhost:3000'
+    return 'http://localhost:3001'
   }
-  return `http://${window.location.hostname}:3000`
+  return `http://${window.location.hostname}:3001`
 }
 
 interface Lobby {
   id: string
   betAmount: number
   currency: 'ARS' | 'ETH' | 'USDT' | 'USDC'
-  network?: 'ETH' | 'BASE'
+  network?: 'ETH' | 'BASE' | 'SEPOLIA'
   maxPlayers: number
   players: any[]
   isPublic: boolean
@@ -25,7 +38,14 @@ interface Lobby {
 }
 
 export interface LobbyScreenProps {
-  onCreateGame: (betAmount: number, maxPlayers: number, isPublic: boolean, password?: string, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC', network?: 'ETH' | 'BASE') => void
+  onCreateGame: (
+    betAmount: number,
+    maxPlayers: number,
+    isPublic: boolean,
+    password?: string,
+    currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC',
+    network?: 'ETH' | 'BASE' | 'SEPOLIA'
+  ) => void
   onJoinGame: (lobbyId: string, password?: string) => void
   onNavigate?: (screen: 'leaderboard') => void
   lobbies?: Lobby[]
@@ -39,7 +59,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   lobbies = [],
   loading = false,
 }) => {
-  const { user } = useAuth()
+  const { user, faucetArs } = useAuth()
   const [tab, setTab] = useState<'public' | 'private' | 'create'>('public')
   const [betAmount, setBetAmount] = useState(100)
   const [maxPlayers, setMaxPlayers] = useState(2)
@@ -48,9 +68,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [selectedAmount, setSelectedAmount] = useState<number | null>(null)
   const [showDepositModal, setShowDepositModal] = useState(false)
   const [showWithdrawModal, setShowWithdrawModal] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [currency, setCurrency] = useState<'ARS' | 'ETH' | 'USDT' | 'USDC'>('ARS')
-  const [network, setNetwork] = useState<'ETH' | 'BASE'>('BASE')
+  const [network, setNetwork] = useState<'ETH' | 'BASE' | 'SEPOLIA'>('BASE')
+  const [isFaucetLoading, setIsFaucetLoading] = useState(false)
 
   // Quick bets según moneda
   const getQuickBets = () => {
@@ -71,14 +91,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const getBetLimits = () => {
     switch (currency) {
       case 'ARS':
-        return { min: 100, max: 100000 }
+        // ARS permite 0 (lobbys free) y hasta 100000
+        return { min: 0, max: 100000 }
       case 'ETH':
         return { min: 0.001, max: 10 }
       case 'USDT':
       case 'USDC':
         return { min: 1, max: 10000 }
       default:
-        return { min: 100, max: 100000 }
+        return { min: 0, max: 100000 }
     }
   }
 
@@ -89,9 +110,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const publicLobbies = lobbies.filter(l => l.isPublic)
   const privateLobbies = lobbies.filter(l => !l.isPublic)
 
-  const handleCreate = () => {
-    const limits = betLimits
-    const numBetAmount = Number(betAmount)
+  const handleCreate = async () => {
+    const limits = betLimits;
+    const numBetAmount = Number(betAmount);
 
     console.log('🎮 Crear Lobby - Debug:', {
       currency,
@@ -104,38 +125,151 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         'betAmount > limits.max': numBetAmount > limits.max,
         calculation: `${numBetAmount} < ${limits.min} = ${numBetAmount < limits.min}`
       }
-    })
+    });
 
-    if (isNaN(numBetAmount) || numBetAmount <= 0) {
-      alert('Por favor ingresa una apuesta válida')
-      return
+    // Para permitir lobbys free en ARS, sólo invalidamos negativos
+    if (isNaN(numBetAmount) || numBetAmount < 0) {
+      alert('Por favor ingresa una apuesta válida (>= 0)');
+      return;
     }
 
     if (numBetAmount < limits.min || numBetAmount > limits.max) {
-      alert(`La apuesta debe estar entre ${limits.min} y ${limits.max.toLocaleString()} ${currency}`)
-      return
+      alert(`La apuesta debe estar entre ${limits.min} y ${limits.max.toLocaleString()} ${currency}`);
+      return;
     }
 
     // Validar que el usuario tenga saldo suficiente en la moneda seleccionada
-    const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0)
-    if (userBalance < numBetAmount) {
-      alert(`No tienes suficiente saldo en ${currency}. Saldo actual: ${userBalance.toLocaleString()}`)
-      return
+    const userBalance = user?.balances?.[currency] ?? (currency === 'ARS' ? user?.balance ?? 0 : 0);
+    if (numBetAmount > 0 && userBalance < numBetAmount) {
+      alert(`No tienes suficiente saldo en ${currency}. Saldo actual: ${userBalance.toLocaleString()}`);
+      return;
     }
 
     // Validar network para crypto
     if (currency !== 'ARS' && !network) {
-      alert('Debes seleccionar una red para crypto')
+      alert('Debes seleccionar una red para crypto');
+      return;
+    }
+
+    const apiUrl = getApiUrl();
+
+    // ETH → usa onCreateGame (flujo on-chain que ya tenías)
+    if (currency === 'ETH') {
+      console.log('🔗 Creando lobby con ETH via onCreateGame...');
+      onCreateGame(numBetAmount, maxPlayers, !isPrivate, password || undefined, currency, network);
+      return;
+    }
+
+    // ARS → usar endpoint /lobbies (GameService, ARS_SANDBOX, público/privado, password)
+if (currency === 'ARS') {
+  try {
+    const res = await fetch(`${apiUrl}/lobbies`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-wallet-id': user?.walletId || 'anon',
+      },
+      body: JSON.stringify({
+        betAmount: numBetAmount,
+        isPublic: !isPrivate,
+        password: isPrivate ? password : undefined,
+        maxPlayers,
+        currency: 'ARS',
+      }),
+    })
+
+    const data = await res.json()
+    if (!res.ok) {
+      alert(data.error || 'Error creando el lobby ARS')
       return
     }
 
-    onCreateGame(numBetAmount, maxPlayers, !isPrivate, isPrivate ? password : undefined, currency, currency !== 'ARS' ? network : undefined)
+    const newLobby = data.lobby
+    const newLobbyId = newLobby?.id as string | undefined
+
+    alert(`Lobby ARS creado! ID: ${newLobbyId || 'N/A'}`)
+
+    // 👉 Auto-join del creador al lobby recién creado
+    if (newLobbyId) {
+      onJoinGame(newLobbyId, isPrivate ? password : undefined)
+    }
+
+    // Opcional: resetear formulario (por si vuelve a la pantalla de creación)
     setBetAmount(100)
     setPassword('')
     setIsPrivate(false)
     setCurrency('ARS')
     setNetwork('BASE')
+    setSelectedAmount(null)
     setTab('public')
+
+    return
+  } catch (err) {
+    console.error(err)
+    alert('Error de red al crear el lobby ARS')
+    return
+  }
+}
+
+
+    // USDT / USDC → mantener flujo /lobby/create con token address (a futuro on-chain)
+    try {
+      // Mapear currency a address usando import.meta.env (Vite)
+      let token = ''
+      if (currency === 'USDT') {
+        if (network === 'SEPOLIA') {
+          token = import.meta.env.VITE_SEPOLIA_USDT_ADDRESS || '0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0';
+        } else {
+          token = import.meta.env.VITE_TEST_USDT_ADDRESS || 'USDT';
+        }
+      } else if (currency === 'USDC') {
+        if (network === 'SEPOLIA') {
+          token = import.meta.env.VITE_SEPOLIA_USDC_ADDRESS || '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238';
+        } else {
+          token = import.meta.env.VITE_TEST_USDC_ADDRESS || 'USDC';
+        }
+      } else {
+        token = currency; // fallback
+      }
+
+      const entryFee = numBetAmount.toString();
+      const payload: any = {
+        token,
+        entryFee,
+        maxPlayers,
+      };
+
+      // En este bloque currency es 'USDT' | 'USDC', así que siempre mandamos network
+      payload.network = network;
+      if (isPrivate) payload.password = password;
+
+      const res = await fetch(`${apiUrl}/lobby/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-id': user?.walletId || 'anon',
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Error creando el lobby');
+        return;
+      }
+
+      alert(`Lobby creado! ID: ${data.lobbyId || data.lobby?.id || 'N/A'}`);
+      // En este bloque sólo estamos en USDT / USDC, así que reseteamos a 1 directo
+      setBetAmount(1);
+      setPassword('');
+      setIsPrivate(false);
+      setCurrency('ARS');
+      setNetwork('BASE');
+      setSelectedAmount(null);
+      setTab('public');
+    } catch (err: any) {
+      alert('Error de red al crear el lobby');
+      console.error(err);
+    }
   }
 
   const handleJoin = (lobbyId: string, isPublic: boolean) => {
@@ -149,16 +283,35 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     }
   }
 
+  const handleFaucetClick = async () => {
+    if (!user) {
+      alert('Debes iniciar sesión para recibir fichas ARS')
+      return
+    }
+    try {
+      setIsFaucetLoading(true)
+      await faucetArs(1000)
+    } catch (err: any) {
+      alert(
+        err instanceof Error
+          ? err.message
+          : 'Error al recibir fichas de práctica ARS'
+      )
+    } finally {
+      setIsFaucetLoading(false)
+    }
+  }
+
   return (
     <div className="lobby-screen">
-      {/* Header con Balance y Deposit */}
+      {/* Header con Balance y acciones */}
       <div className="lobby-header">
         <div className="logo-section">
           <div className="uno-logo">₿ 🃏 ⟠ </div>
-          <h1>UNO Chain</h1>
+          <h1>Chain Table</h1>
           <p className="subtitle">Juega • Apuesta • Gana</p>
         </div>
-        {/* Balance y Deposit Button */}
+        {/* Balance y acciones */}
         <div className="header-balance-section">
           <div className="balance-display-compact">
             <span className="balance-label">Saldo:</span>
@@ -194,6 +347,13 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             >
               💸 Retirar
             </button>
+            <button
+              className="btn-faucet-header"
+              onClick={handleFaucetClick}
+              disabled={isFaucetLoading || !user}
+            >
+              {isFaucetLoading ? '⏳ Fichas...' : '🎁 Fichas ARS'}
+            </button>
             {onNavigate && (
               <button
                 className="btn-ranking-header"
@@ -205,8 +365,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Quick Play Button - REMOVED */}
 
       {/* Tabs */}
       <div className="lobby-tabs">
@@ -222,7 +380,8 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           onClick={() => setTab('private')}
         >
           <span className="icon">🔒</span>
-          Privados        </button>
+          Privados
+        </button>
         <button
           className={`tab-btn ${tab === 'create' ? 'active' : ''}`}
           onClick={() => setTab('create')}
@@ -234,6 +393,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
       {/* Content */}
       <div className="lobby-content">
+        {/* públicos */}
         {tab === 'public' && (
           <div className="public-games">
             <div className="content-header">
@@ -259,7 +419,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                       <div className="bet-section">
                         <span className="bet-label">Apuesta</span>
                         <span className="bet-value">${lobby.betAmount}</span>
-                        <span className="bet-currency">{lobby.currency}{lobby.network ? ` (${lobby.network})` : ''}</span>
+                        <span className="bet-currency">
+                          {lobby.currency}
+                          {lobby.network ? ` (${lobby.network})` : ''}
+                        </span>
                       </div>
 
                       <div className="players-section">
@@ -289,10 +452,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </div>
         )}
 
+        {/* privados */}
         {tab === 'private' && (
           <div className="private-games">
             <div className="content-header">
-              <h2>Juegos Privados (Con Apuesta)</h2>
+              <h2>Juegos Privados</h2>
               {loading && <div className="mini-spinner"></div>}
             </div>
 
@@ -306,15 +470,16 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               <div className="games-grid">
                 {privateLobbies.map((lobby) => (
                   <div key={lobby.id} className="game-card">
-                    <div className="card-badge">
-                      🔒
-                    </div>
+                    <div className="card-badge">🔒</div>
 
                     <div className="card-content">
                       <div className="bet-section">
                         <span className="bet-label">Apuesta</span>
                         <span className="bet-value">${lobby.betAmount}</span>
-                        <span className="bet-currency">{lobby.currency}{lobby.network ? ` (${lobby.network})` : ''}</span>
+                        <span className="bet-currency">
+                          {lobby.currency}
+                          {lobby.network ? ` (${lobby.network})` : ''}
+                        </span>
                       </div>
 
                       <div className="players-section">
@@ -344,6 +509,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </div>
         )}
 
+        {/* crear */}
         {tab === 'create' && (
           <div className="create-game">
             <div className="content-header">
@@ -388,7 +554,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                     className={`currency-option ${currency === 'USDT' ? 'active' : ''}`}
                     onClick={() => {
                       setCurrency('USDT')
-                      setNetwork('BASE')
                       setBetAmount(1)
                       setSelectedAmount(null)
                     }}
@@ -399,7 +564,6 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                     className={`currency-option ${currency === 'USDC' ? 'active' : ''}`}
                     onClick={() => {
                       setCurrency('USDC')
-                      setNetwork('BASE')
                       setBetAmount(1)
                       setSelectedAmount(null)
                     }}
@@ -419,31 +583,53 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 </div>
               </div>
 
-              {/* Network Selector (only for ETH) */}
-              {currency === 'ETH' && (
+              {/* Network Selector (for ETH, USDT, USDC) */}
+              {(currency === 'ETH' || currency === 'USDT' || currency === 'USDC') && (
                 <div className="form-group">
                   <label className="form-label">🌐 Red Blockchain</label>
                   <div className="network-selector">
-                    <button
-                      className={`network-option ${network === 'ETH' ? 'active' : ''}`}
-                      onClick={() => setNetwork('ETH')}
-                    >
-                      Ethereum
-                    </button>
-                    <button
-                      className={`network-option ${network === 'BASE' ? 'active' : ''}`}
-                      onClick={() => setNetwork('BASE')}
-                    >
-                      Base
-                    </button>
+                    {currency === 'ETH' && (
+                      <>
+                        <button
+                          className={`network-option ${network === 'SEPOLIA' ? 'active' : ''}`}
+                          onClick={() => setNetwork('SEPOLIA')}
+                        >
+                          Sepolia
+                        </button>
+                        <button
+                          className={`network-option ${network === 'BASE' ? 'active' : ''}`}
+                          onClick={() => setNetwork('BASE')}
+                        >
+                          Base
+                        </button>
+                      </>
+                    )}
+                    {(currency === 'USDT' || currency === 'USDC') && (
+                      <>
+                        <button
+                          className={`network-option ${network === 'BASE' ? 'active' : ''}`}
+                          onClick={() => setNetwork('BASE')}
+                        >
+                          Base (L2)
+                        </button>
+                        <button
+                          className={`network-option ${network === 'SEPOLIA' ? 'active' : ''}`}
+                          onClick={() => setNetwork('SEPOLIA')}
+                        >
+                          Sepolia (Testnet)
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
 
-              {/* Info: USDT/USDC siempre en Base */}
+              {/* Info: USDT/USDC red seleccionada */}
               {(currency === 'USDT' || currency === 'USDC') && (
                 <div className="network-info">
-                  <span className="network-badge">🌐 Red: Base (L2)</span>
+                  <span className="network-badge">
+                    🌐 Red: {network === 'BASE' ? 'Base (L2)' : 'Sepolia (Testnet)'}
+                  </span>
                 </div>
               )}
 

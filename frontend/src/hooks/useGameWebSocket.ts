@@ -39,9 +39,9 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
     // Get backend server address (same as REST API)
     const getBackendUrl = () => {
       if (window.location.hostname === 'localhost') {
-        return 'localhost:3000'
+        return '127.0.0.1:3001'
       }
-      return `${window.location.hostname}:3000`
+      return `${window.location.hostname}:3001`
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'

@@ -176,6 +176,11 @@ export class GameWebSocketHandler {
    * Public so it can be called from external timer intervals
    */
   broadcastGameState(): void {
+    // Make it async internally but don't change the signature to avoid changing all callers
+    this.doBroadcastGameState().catch(err => console.error('Error broadcasting game state:', err))
+  }
+
+  private async doBroadcastGameState(): Promise<void> {
     const gameState = this.gameService.getGameState(this.gameId)
     if (!gameState || gameState.discardPile.length === 0) return
 
@@ -187,22 +192,22 @@ export class GameWebSocketHandler {
         // State was already modified by checkTurnTimeout, get updated state
         const updatedState = this.gameService.getGameState(this.gameId)
         if (updatedState) {
-          this.broadcastGameStateWithData(updatedState)
+          await this.doBroadcastGameStateWithData(updatedState)
         }
         return
       }
     }
 
-    this.broadcastGameStateWithData(gameState)
+    await this.doBroadcastGameStateWithData(gameState)
   }
 
-  private broadcastGameStateWithData(gameState: any): void {
+  private async doBroadcastGameStateWithData(gameState: any): Promise<void> {
     // Check if game has ended and finish it
     if (gameState.winner && !gameState.finished) {
       console.log(`🏆 Juego terminado! Ganador: ${gameState.winner}`)
       
       // Intentar finalizar con escrow primero
-      const result = this.gameService.finishGameWithEscrow(this.gameId, gameState.winner, gameState.players)
+      const result = await this.gameService.finishGameWithEscrow(this.gameId, gameState.winner, gameState.players)
       
       if (result.success) {
         console.log('✅ Escrow distribuido y lobby marcado como terminado')

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { withdraw } from '../mocks/lemonSDK';
+import { withdraw, TokenName } from '../lemon-mini-app-sdk';
 
 interface WithdrawModalProps {
   isOpen: boolean;
@@ -95,7 +95,15 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose, o
     setLoading(true);
 
     try {
-      const result = await withdraw(amount.toString(), currency);
+      let result
+      if (currency === 'ARS') {
+        // Para ARS (fiat), usar mock
+        const { withdraw: mockWithdraw } = await import('../mocks/lemonSDK')
+        result = await mockWithdraw(amount.toString(), currency)
+      } else {
+        // Para crypto, usar SDK real
+        result = await withdraw({ amount: amount.toString(), tokenName: currency as TokenName })
+      }
 
       if (result.result === 'SUCCESS') {
         // Deduct amount from balance

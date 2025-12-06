@@ -1,11 +1,21 @@
 // Local shim for `@lemoncash/mini-app-sdk` used for local development/demo.
-// Replace this with the real SDK import when you install the official package.
+// In production WebView, delegates to the real SDK.
+// In development, uses mocks for testing.
+
+import {
+  authenticate as realAuthenticate,
+  deposit as realDeposit,
+  withdraw as realWithdraw,
+  callSmartContract as realCallSmartContract,
+  isWebView as realIsWebView,
+} from '@lemoncash/mini-app-sdk'
 
 import {
   authenticate as mockAuthenticate,
-  isWebView as mockIsWebView,
   deposit as mockDeposit,
+  withdraw as mockWithdraw,
   callSmartContract as mockCallSmartContract,
+  isWebView as mockIsWebView,
   getMockWallets,
   resetMock,
 } from './mocks/lemonSDK'
@@ -75,32 +85,46 @@ export enum ContractStandard {
 // ========================================
 
 export function isWebView(): boolean {
-  return mockIsWebView()
+  return realIsWebView()
 }
 
 export async function authenticate(opts?: { nonce?: string; chainId?: ChainId }): Promise<any> {
-  return mockAuthenticate({
-    nonce: opts?.nonce,
-    chainId: opts?.chainId,
-  })
+  if (realIsWebView()) {
+    return realAuthenticate(opts)
+  } else {
+    return mockAuthenticate(opts)
+  }
 }
 
 export async function deposit(options: { amount: string; tokenName: TokenName; chainId?: ChainId }): Promise<any> {
-  return mockDeposit({
-    amount: options.amount,
-    tokenName: options.tokenName,
-    chainId: options.chainId,
-  })
+  if (realIsWebView()) {
+    return realDeposit(options)
+  } else {
+    return mockDeposit(options.amount, options.tokenName)
+  }
+}
+
+export async function withdraw(options: { amount: string; tokenName: TokenName }): Promise<any> {
+  if (realIsWebView()) {
+    return realWithdraw(options)
+  } else {
+    return mockWithdraw(options.amount, options.tokenName)
+  }
 }
 
 export async function callSmartContract(input: any): Promise<any> {
-  return mockCallSmartContract(input)
+  if (realIsWebView()) {
+    return realCallSmartContract(input)
+  } else {
+    return mockCallSmartContract(input)
+  }
 }
 
 export default {
   isWebView,
   authenticate,
   deposit,
+  withdraw,
   callSmartContract,
   TransactionResult,
   ChainId,

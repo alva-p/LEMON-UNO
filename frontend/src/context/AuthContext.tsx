@@ -1,18 +1,17 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { TransactionResult } from '@lemoncash/mini-app-sdk'
 import { isWebView } from '../lemon-mini-app-sdk'
-import { authenticate as mockAuthenticate } from '../mocks/lemonSDK'
+import { authenticate, ChainId } from '../lemon-mini-app-sdk'
 
 /**
  * Get the correct API URL based on environment
  */
 function getApiUrl(): string {
-  // En desarrollo, usar la IP local si no estamos en localhost
+  // Use 127.0.0.1 for localhost to ensure it works
   if (window.location.hostname === 'localhost') {
-    return 'http://localhost:3000'
+    return 'http://127.0.0.1:3001'
   }
-  // Si accedemos por IP (desde celular), reemplazar puerto 5173 con 3000
-  return `http://${window.location.hostname}:3000`
+  return `http://${window.location.hostname}:3001`
 }
 
 export interface User {
@@ -40,6 +39,7 @@ export interface AuthContextType {
   logout: () => void
   updateBalance: (amount: number, currency?: 'ARS' | 'ETH' | 'USDT' | 'USDC') => void
   addWin: (points: number) => void
+  faucetArs: (amount?: number) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -54,7 +54,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const webViewStatus = isWebView()
     setIsWebViewMode(webViewStatus)
-    
+
     // Try to restore session from localStorage
     const savedUser = localStorage.getItem('lemon_user')
     if (savedUser) {
@@ -74,7 +74,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to restore user session:', err)
       }
     }
-    
+
     setIsLoading(false)
   }, [])
 
@@ -110,16 +110,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const nonce = await getNonce()
       console.log('📝 Nonce obtenido:', nonce.slice(0, 8) + '...')
 
-      // Step 2: Call SIWE authenticate with nonce from Lemon SDK
-      console.log(
-        isWebViewMode
-          ? '🔵 Usando Lemon SDK real (WebView)'
-          : '🟡 Usando Mock SDK (Desarrollo local)'
-      )
-
-      const result = await mockAuthenticate({
+      const result = await authenticate({
         nonce,
-        chainId: 80002, // Polygon Amoy
+        chainId: ChainId.POLYGON_AMOY,
       })
 
       if (result.result === TransactionResult.FAILED) {
@@ -180,9 +173,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('lemon_user')
   }
 
-  const updateBalance = (amount: number, currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS') => {
+  const updateBalance = (
+    amount: number,
+    currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS'
+  ) => {
     if (user) {
-      const updated = {
+      const updated: User = {
         ...user,
         balance: currency === 'ARS' ? amount : user.balance,
         balances: {
@@ -197,13 +193,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const addWin = (points: number) => {
     if (user) {
-      const updated = {
+      const updated: User = {
         ...user,
         wins: user.wins + 1,
         points: user.points + points,
       }
       setUser(updated)
       localStorage.setItem('lemon_user', JSON.stringify(updated))
+    }
+  }
+
+  /**
+   * Faucet ARS: pide fichas de práctica al backend y sincroniza el saldo ARS
+   */
+  const faucetArs = async (amount: number = 1000): Promise<void> => {
+    if (!user) {
+      throw new Error('Debes iniciar sesión para recibir fichas ARS')
+    }
+
+    try {
+      const res = await fetch(`${getApiUrl()}/sandbox/ars/faucet`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-id': user.walletId,
+        },
+        body: JSON.stringify({ amount }),
+      })
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Error al solicitar fichas ARS')
+      }
+
+      const data = await res.json()
+      const newBalance = data.balance as number
+
+      // Actualizar el contexto con el saldo devuelto por el backend
+      updateBalance(newBalance, 'ARS')
+      console.log(`💧 Faucet ARS aplicado. Nuevo saldo ARS: ${newBalance}`)
+    } catch (err) {
+      console.error('Faucet ARS error:', err)
+      throw err
     }
   }
 
@@ -219,6 +250,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         logout,
         updateBalance,
         addWin,
+        faucetArs,
       }}
     >
       {children}

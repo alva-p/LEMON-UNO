@@ -49,6 +49,7 @@ export class WebViewBridge {
   private pendingRequests = new Map<string, PendingRequest>()
   private requestIdCounter = 0
   private messageListeners: Array<(msg: WebViewMessage) => void> = []
+  private lastWebSocketErrorTime = 0
 
   constructor() {
     this.detectWebView()
@@ -205,10 +206,14 @@ export class WebViewBridge {
   }
 
   /**
-   * Obtiene si estamos en WebView
+   * Log error with throttling to prevent spam
    */
-  getIsWebView(): boolean {
-    return this.isWebView
+  private logError(message: string, ...args: any[]): void {
+    const now = Date.now()
+    if (now - this.lastWebSocketErrorTime > 5000) {
+      console.error(message, ...args)
+      this.lastWebSocketErrorTime = now
+    }
   }
 
   /**

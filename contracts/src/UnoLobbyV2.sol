@@ -83,7 +83,7 @@ contract UnoLobbyV2 is Ownable, ReentrancyGuard {
     error InvalidDevWallet();
     error NoFundsToWithdraw();
 
-    constructor(address _devWallet) Ownable() {
+    constructor(address _devWallet) Ownable(_devWallet) {
         if (_devWallet == address(0)) revert InvalidDevWallet();
         devWallet = _devWallet;
     }

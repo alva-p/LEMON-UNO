@@ -2,6 +2,7 @@
  * Deposit Modal - Permite depositar dinero en el juego
  */
 import React, { useState } from 'react'
+import { deposit, TokenName } from '../lemon-mini-app-sdk'
 import { useAuth } from '../context/AuthContext'
 
 export interface DepositModalProps {
@@ -100,8 +101,15 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose, onS
       setIsLoading(true)
 
       // Llamar SDK para depositar
-      const { deposit } = await import('../mocks/lemonSDK')
-      const result = await deposit(amount.toString(), currency)
+      let result
+      if (currency === 'ARS') {
+        // Para ARS (fiat), usar mock
+        const { deposit: mockDeposit } = await import('../mocks/lemonSDK')
+        result = await mockDeposit(amount.toString(), currency)
+      } else {
+        // Para crypto, usar SDK real
+        result = await deposit({ amount: amount.toString(), tokenName: currency as TokenName })
+      }
 
       if (result.result === 'FAILED') {
         throw new Error(result.error?.message || 'Error en depósito')

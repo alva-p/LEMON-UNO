@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@lemoncash/mini-app-sdk": "^0.1.9",
+    "dotenv": "^17.2.3",
+    "pg": "^8.16.3"
+  }
+}

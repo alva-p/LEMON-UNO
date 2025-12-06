@@ -59,8 +59,17 @@ export interface GameState {
   pendingDrawCount: number // Cards to draw if no +2/+4 played (0 if none pending)
   pendingDrawType?: 'DRAW_TWO' | 'WILD_DRAW_FOUR' // Type of card that created pending
   cardPlayedThisTurn: boolean // Track if player already played a card this turn
+  hasDrawnThisTurn: boolean   // para controlar "solo 1 robo por turno"
   turnStartTime: number // Timestamp when current turn started (for timeout)
+
+  // Opcionales útiles si los usás en el front
+  playableCardIds?: string[]
+  timeRemaining?: number
 }
+
+// ============================
+// DECK / UTILIDADES
+// ============================
 
 // Initialize deck with all 108 cards
 export function createDeck(): Card[] {
@@ -111,7 +120,11 @@ export function shuffle<T>(arr: T[]): T[] {
 }
 
 // Draw cards from deck, reshuffle discard if needed
-export function drawCards(deck: Card[], discardPile: Card[], count: number): { cards: Card[]; newDeck: Card[] } {
+export function drawCards(
+  deck: Card[],
+  discardPile: Card[],
+  count: number
+): { cards: Card[]; newDeck: Card[] } {
   let currentDeck = [...deck]
   const drawn: Card[] = []
 
@@ -132,49 +145,72 @@ export function drawCards(deck: Card[], discardPile: Card[], count: number): { c
   return { cards: drawn, newDeck: currentDeck }
 }
 
+// ============================
+// REGLAS DE JUGABILIDAD
+// ============================
+
 // Check if a card can be played on the discard pile
-export function canPlayCard(card: Card, topCard: Card, currentWildColor?: CardColor): boolean {
-  // Wild cards can always be played
-  if (card.type === CardType.WILD || card.type === CardType.WILD_DRAW_FOUR) {
+export function canPlayCard(
+  card: Card,
+  topCard: Card,
+  currentWildColor?: CardColor
+): boolean {
+  // 1) +4 siempre se puede intentar jugar
+  //    (la legalidad más fina se puede controlar con canPlayWildDrawFour)
+  if (card.type === CardType.WILD_DRAW_FOUR) {
     return true
   }
 
-  // If a wild was just played, check color only
+  // 2) WILD normal:
+  //    - NO se puede jugar directamente sobre un +4
+  //    - En cualquier otro caso, sí se puede
+  if (card.type === CardType.WILD) {
+    if (topCard.type === CardType.WILD_DRAW_FOUR) {
+      return false
+    }
+    return true
+  }
+
+  // 3) Si la última carta fue un WILD/+4 con color elegido,
+  //    solo se evalúa color
   if (currentWildColor) {
     return card.color === currentWildColor
   }
 
-  // For numbered cards: match by color OR number
+  // 4) Para cartas NUMÉRICAS: color O número
   if (card.type === CardType.NUMBER && topCard.type === CardType.NUMBER) {
     return card.color === topCard.color || card.number === topCard.number
   }
 
-  // For action cards (+2, REVERSE, SKIP): match by color OR same type
-  // Examples:
-  // - Red +2 on Red 5 ✅ (color match)
-  // - Red +2 on Blue +2 ✅ (same type)
-  // - Red REVERSE on Red 3 ✅ (color match)
-  // - Red REVERSE on Blue REVERSE ✅ (same type)
+  // 5) Para cartas de acción (+2, REVERSE, SKIP) entre sí:
+  //    color O mismo tipo
   if (
-    (card.type === CardType.DRAW_TWO || card.type === CardType.REVERSE || card.type === CardType.SKIP) &&
-    (topCard.type === CardType.DRAW_TWO || topCard.type === CardType.REVERSE || topCard.type === CardType.SKIP)
+    (card.type === CardType.DRAW_TWO ||
+      card.type === CardType.REVERSE ||
+      card.type === CardType.SKIP) &&
+    (topCard.type === CardType.DRAW_TWO ||
+      topCard.type === CardType.REVERSE ||
+      topCard.type === CardType.SKIP)
   ) {
-    // If both are action cards, match by color or same type
     return card.color === topCard.color || card.type === topCard.type
   }
 
-  // Action card on number: only color match
+  // 6) Acción sobre número: solo color
   if (
-    (card.type === CardType.DRAW_TWO || card.type === CardType.REVERSE || card.type === CardType.SKIP) &&
+    (card.type === CardType.DRAW_TWO ||
+      card.type === CardType.REVERSE ||
+      card.type === CardType.SKIP) &&
     topCard.type === CardType.NUMBER
   ) {
     return card.color === topCard.color
   }
 
-  // Number on action: only color match
+  // 7) Número sobre acción: solo color
   if (
     card.type === CardType.NUMBER &&
-    (topCard.type === CardType.DRAW_TWO || topCard.type === CardType.REVERSE || topCard.type === CardType.SKIP)
+    (topCard.type === CardType.DRAW_TWO ||
+      topCard.type === CardType.REVERSE ||
+      topCard.type === CardType.SKIP)
   ) {
     return card.color === topCard.color
   }
@@ -185,46 +221,69 @@ export function canPlayCard(card: Card, topCard: Card, currentWildColor?: CardCo
 /**
  * Get all playable cards from a hand
  * Returns array of card IDs that can be played
- * 
- * Rules:
- * - If pendingDrawCount > 0 and pendingDrawType is DRAW_TWO: only +2 can be played
- * - If pendingDrawCount > 0 and pendingDrawType is WILD_DRAW_FOUR: only +4 can be played
- * - If no pending draw: normal UNO rules apply, but only 1 card can be played per turn
- * - WILD and +4 can always be played regardless
+ *
+ * Reglas:
+ * - Si pendingDrawCount > 0 y pendingDrawType === DRAW_TWO        → solo +2
+ * - Si pendingDrawCount > 0 y pendingDrawType === WILD_DRAW_FOUR  → solo +4
+ * - Si NO hay acumulación:
+ *    - Reglas normales UNO (canPlayCard)
+ *    - Regla extra: si la carta de arriba es +2, NO permitir WILD ni +4
+ *    - Regla de +4 avanzada opcional vía canPlayWildDrawFour
  */
-export function getPlayableCards(hand: Card[], topCard: Card, currentWildColor?: CardColor, pendingDrawCount: number = 0, pendingDrawType?: 'DRAW_TWO' | 'WILD_DRAW_FOUR'): string[] {
-  // If there's a pending draw accumulation in progress
+export function getPlayableCards(
+  hand: Card[],
+  topCard: Card,
+  currentWildColor?: CardColor,
+  pendingDrawCount: number = 0,
+  pendingDrawType?: 'DRAW_TWO' | 'WILD_DRAW_FOUR'
+): string[] {
+  // 1) Acumulación en progreso
   if (pendingDrawCount > 0) {
     if (pendingDrawType === 'DRAW_TWO') {
-      // Only +2 can be played to continue the accumulation
+      // Solo +2
       return hand
         .filter((card) => card.type === CardType.DRAW_TWO)
         .map((card) => card.id)
     } else if (pendingDrawType === 'WILD_DRAW_FOUR') {
-      // Only +4 can be played to continue the accumulation
+      // Solo +4
       return hand
         .filter((card) => card.type === CardType.WILD_DRAW_FOUR)
         .map((card) => card.id)
     }
   }
 
-  // Normal mode: return all playable cards (including WILD and +4 which can always be played)
+  // 2) Modo normal: reglas estándar + regla extra de +2 vs WILD/+4
   return hand
     .filter((card) => {
-      if (!canPlayCard(card, topCard, currentWildColor)) return false
-      // Check +4 legality if it's a +4
-      if (card.type === CardType.WILD_DRAW_FOUR && !canPlayWildDrawFour(hand, topCard)) {
+      // Primero: debe ser jugable según las reglas base
+      if (!canPlayCard(card, topCard, currentWildColor)) {
         return false
       }
+
+      // Regla EXTRA:
+      // Si la carta de arriba es +2, NO permitir que se juegue WILD ni WILD_DRAW_FOUR.
+      if (
+        topCard.type === CardType.DRAW_TWO &&
+        (card.type === CardType.WILD || card.type === CardType.WILD_DRAW_FOUR)
+      ) {
+        return false
+      }
+
+      // Regla opcional: si algún día querés validar +4 más en serio
+      if (
+        card.type === CardType.WILD_DRAW_FOUR &&
+        !canPlayWildDrawFour(hand, topCard)
+      ) {
+        return false
+      }
+
       return true
     })
     .map((card) => card.id)
 }
 
 // Check if WILD_DRAW_FOUR is legal
-// According to standard UNO rules, +4 is always playable (challenge system may come later)
+// Por ahora, +4 siempre es legal (la validación avanzada/challenge puede ir acá)
 export function canPlayWildDrawFour(hand: Card[], topCard: Card): boolean {
-  // For now, +4 is always playable
-  // A challenge system can be implemented later if needed
   return true
 }

@@ -54,7 +54,9 @@ const MOCK_WALLETS = [
   },
 ]
 
-let mockUserWallet: string = '' // Variable local para esta sesión
+// Variable global para tracking de wallets asignadas
+let assignedWallets = new Set<string>()
+let walletAssignmentCounter = 0
 
 /**
  * Mock de isWebView - detecta si está corriendo en WebView
@@ -98,19 +100,35 @@ export async function authenticate(
   // Mock para desarrollo - PERMITIR SIEMPRE EN DESARROLLO
   return new Promise((resolve) => {
     setTimeout(() => {
-      // Obtener o generar wallet para esta sesión (única por pestaña/navegador)
-      // Primero intentar restaurar de localStorage para esta sesión
-      let wallet = typeof window !== 'undefined' 
-        ? window.localStorage.getItem('mock_wallet_session')
+      // Obtener o generar wallet única para esta pestaña/ventana
+      // Usar sessionStorage para que sea único por pestaña
+      let sessionId = typeof window !== 'undefined' 
+        ? window.sessionStorage.getItem('mock_session_id')
         : null
       
-      if (!wallet) {
-        // Si no existe, asignar nueva wallet aleatoria
-        wallet = MOCK_WALLETS[Math.floor(Math.random() * MOCK_WALLETS.length)].address
-        // Guardar en localStorage para que sea persistente en esta pestaña
+      if (!sessionId) {
+        // Generar ID único para esta sesión/pestaña
+        sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11)
         if (typeof window !== 'undefined') {
-          window.localStorage.setItem('mock_wallet_session', wallet)
+          window.sessionStorage.setItem('mock_session_id', sessionId)
         }
+      }
+
+      // Obtener contador de llamadas para esta sesión
+      let callCount = typeof window !== 'undefined' 
+        ? parseInt(window.sessionStorage.getItem(`mock_call_count_${sessionId}`) || '0')
+        : 0
+
+      // Asignar wallet usando contador rotativo para testing multi-jugador
+      const walletIndex = (walletAssignmentCounter + callCount) % MOCK_WALLETS.length
+      const wallet = MOCK_WALLETS[walletIndex].address
+      walletAssignmentCounter++
+      callCount++
+
+      // Marcar como asignada y guardar contador
+      assignedWallets.add(wallet)
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(`mock_call_count_${sessionId}`, callCount.toString())
       }
 
       // Construye el mensaje SIWE siguiendo el estándar EIP-4361
@@ -120,6 +138,8 @@ export async function authenticate(
       const mockSignature = '0x' + 'ab'.repeat(65)
 
       console.log('✅ Mock authenticate exitoso')
+      console.log('  Session ID:', sessionId)
+      console.log('  Call Count:', callCount - 1)  // Since we incremented after
       console.log('  Wallet:', wallet)
       console.log('  Nonce:', options?.nonce?.slice(0, 8) + '...')
 
@@ -518,5 +538,12 @@ export function getMockWallets() {
  * Resetea el estado mock
  */
 export function resetMock() {
-  mockUserWallet = ''
+  assignedWallets.clear()
+  walletAssignmentCounter = 0
+  // Limpiar todas las wallets mock guardadas
+  if (typeof window !== 'undefined') {
+    const keys = Object.keys(window.localStorage).filter(key => key.startsWith('mock_wallet_'))
+    keys.forEach(key => window.localStorage.removeItem(key))
+    window.sessionStorage.removeItem('mock_session_id')
+  }
 }

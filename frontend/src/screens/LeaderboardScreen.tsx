@@ -16,9 +16,10 @@ export interface MoneyLeaderboardEntry {
   rank: number
   username: string
   userId: string
-  earnings: number
-  wins: number
-  losses: number
+  earningsARS: number
+  earningsETH: number
+  earningsUSDT: number
+  earningsUSDC: number
 }
 
 type LeaderboardEntry = PointsLeaderboardEntry | MoneyLeaderboardEntry
@@ -29,9 +30,9 @@ export interface LeaderboardScreenProps {
 
 function getApiUrl(): string {
   if (window.location.hostname === 'localhost') {
-    return 'http://localhost:3000'
+    return 'http://localhost:3001'
   }
-  return `http://${window.location.hostname}:3000`
+  return `http://${window.location.hostname}:3001`  
 }
 
 export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }) => {
@@ -39,6 +40,7 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'points' | 'money'>('points')
+  const [moneyFilter, setMoneyFilter] = useState<'ALL' | 'ARS' | 'ETH' | 'USDT' | 'USDC'>('ALL')
 
   useEffect(() => {
     const fetchLeaderboard = async () => {
@@ -64,6 +66,22 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
   }, [activeTab])
 
   const isPointsLeaderboard = activeTab === 'points'
+  const filteredLeaderboard = !isPointsLeaderboard
+    ? (leaderboard as MoneyLeaderboardEntry[]).slice().sort((a, b) => {
+        const getVal = (e: MoneyLeaderboardEntry) => {
+          switch (moneyFilter) {
+            case 'ARS': return e.earningsARS || 0
+            case 'ETH': return e.earningsETH || 0
+            case 'USDT': return e.earningsUSDT || 0
+            case 'USDC': return e.earningsUSDC || 0
+            case 'ALL': default:
+              // Orden por ALL: suma visual, pero no se muestra combinada
+              return (e.earningsARS || 0) + (e.earningsETH || 0) + (e.earningsUSDT || 0) + (e.earningsUSDC || 0)
+          }
+        }
+        return getVal(b) - getVal(a)
+      })
+    : leaderboard
 
   return (
     <div className="leaderboard-container">
@@ -78,15 +96,31 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
           className={`tab ${activeTab === 'points' ? 'active' : ''}`}
           onClick={() => setActiveTab('points')}
         >
-          ⭐ Puntos
+          ⭐ Partidas ganadas
         </button>
         <button
           className={`tab ${activeTab === 'money' ? 'active' : ''}`}
           onClick={() => setActiveTab('money')}
         >
-          💰 Dinero
+          💰 Dinero ganado
         </button>
       </div>
+
+      {/* Money sub-filters: tops por moneda */}
+      {activeTab === 'money' && (
+        <div className="money-filters">
+          <span>Top por:</span>
+          {(['ALL', 'ARS', 'ETH', 'USDT', 'USDC'] as const).map((m) => (
+            <button
+              key={m}
+              className={`chip ${moneyFilter === m ? 'active' : ''}`}
+              onClick={() => setMoneyFilter(m)}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
 
       {loading && (
         <div className="loading-state">
@@ -101,9 +135,9 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
         </div>
       )}
 
-      {!loading && leaderboard.length > 0 && (
+      {!loading && (isPointsLeaderboard ? leaderboard.length > 0 : filteredLeaderboard.length > 0) && (
         <div className="leaderboard-list">
-          {leaderboard.map((entry) => (
+          {(isPointsLeaderboard ? leaderboard : filteredLeaderboard).map((entry) => (
             <div
               key={entry.rank}
               className={`leaderboard-item ${walletId === entry.userId ? 'current-user' : ''}`}
@@ -121,26 +155,33 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
                 <div className="player-avatar">{entry.username.charAt(0).toUpperCase()}</div>
                 <div className="player-info">
                   <div className="player-name">{entry.username}</div>
-                  <div className="player-stats">
-                    <span className="stat-item">
-                      <span className="stat-label">Victorias</span>
-                      <span className="stat-value">{entry.wins}</span>
-                    </span>
-                    <span className="stat-divider">•</span>
-                    <span className="stat-item">
-                      <span className="stat-label">Derrotas</span>
-                      <span className="stat-value">{entry.losses}</span>
-                    </span>
-                  </div>
+                  {isPointsLeaderboard ? (
+                    <div className="player-stats">
+                      <span className="stat-item">
+                        <span className="stat-label">Victorias</span>
+                        <span className="stat-value">{(entry as PointsLeaderboardEntry).wins}</span>
+                      </span>
+                      <span className="stat-divider">•</span>
+                      <span className="stat-item">
+                        <span className="stat-label">Derrotas</span>
+                        <span className="stat-value">{(entry as PointsLeaderboardEntry).losses}</span>
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
               <div className="balance-section">
-                <div className="balance-amount">
-                  {isPointsLeaderboard
-                    ? `${(entry as PointsLeaderboardEntry).points} pts`
-                    : `$${(entry as MoneyLeaderboardEntry).earnings}`}
-                </div>
+                {isPointsLeaderboard ? (
+                  <div className="balance-amount">{(entry as PointsLeaderboardEntry).points} pts</div>
+                ) : (
+                  <div className="money-breakdown">
+                    <div className="money-chip">ARS: {(entry as MoneyLeaderboardEntry).earningsARS ?? 0}</div>
+                    <div className="money-chip">ETH: {(entry as MoneyLeaderboardEntry).earningsETH ?? 0}</div>
+                    <div className="money-chip">USDT: {(entry as MoneyLeaderboardEntry).earningsUSDT ?? 0}</div>
+                    <div className="money-chip">USDC: {(entry as MoneyLeaderboardEntry).earningsUSDC ?? 0}</div>
+                  </div>
+                )}
               </div>
 
               {walletId === entry.userId && <div className="current-indicator">Tú</div>}
@@ -149,7 +190,7 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ walletId }
         </div>
       )}
 
-      {!loading && leaderboard.length === 0 && (
+      {!loading && (isPointsLeaderboard ? leaderboard.length === 0 : filteredLeaderboard.length === 0) && (
         <div className="empty-state">
           <div className="empty-icon">📊</div>
           <p>Sin datos de ranking aún</p>

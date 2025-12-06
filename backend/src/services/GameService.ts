@@ -1,80 +1,150 @@
-import { GameEngine, GameState, Player } from '../game/engine'
+import { GameEngine, Player } from '../game/engine'
 import { gameEscrowService } from './GameEscrowService'
 
-/**
- * GameService - manages game lobbies and active games with escrow
- */
+export type EconomyMode = 'ARS_SANDBOX' | 'CRYPTO'
+
 export interface LobbyData {
   id: string
   creator: string
-  creatorId: string // Wallet ID of lobby creator for permission checks
+  creatorId: string
   isPublic: boolean
   password?: string
   betAmount: number
-  currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' // Tipo de moneda para la apuesta
-  network?: 'ETH' | 'BASE' // Red blockchain (solo para crypto)
+  currency: 'ARS' | 'ETH' | 'USDT' | 'USDC'
+  network?: 'ETH' | 'BASE'
   maxPlayers: number
   players: Player[]
   createdAt: Date
-  status: 'waiting' | 'started' | 'finished' | 'cancelled' // Estado del lobby
-  gameId?: string // Game ID when status is 'started'
-  escrowId?: string // Escrow entry ID when game starts
+  status: 'waiting' | 'started' | 'finished' | 'cancelled'
+  contractLobbyId?: bigint
+  txHash?: string
+  economyMode: EconomyMode
+  isTest: boolean
+  gameId?: string
 }
 
 export class GameService {
-  private games: Map<string, GameEngine> = new Map()
   private lobbies: Map<string, LobbyData> = new Map()
+  private games: Map<string, GameEngine> = new Map()
+  private arsBalances: Map<string, number> = new Map()
 
-  /**
-   * Create a new lobby
-   */
-  createLobby(
+  // ============================
+  // ARS SANDBOX BALANCES
+  // ============================
+
+  getArsSandboxBalance(playerId: string): number {
+    return this.arsBalances.get(playerId) ?? 0
+  }
+
+  creditArsSandbox(playerId: string, amount: number): void {
+    const current = this.getArsSandboxBalance(playerId)
+    this.arsBalances.set(playerId, current + amount)
+  }
+
+  debitArsSandbox(playerId: string, amount: number): void {
+    const current = this.getArsSandboxBalance(playerId)
+    if (current < amount) throw new Error('Saldo ARS insuficiente')
+    this.arsBalances.set(playerId, current - amount)
+  }
+
+  // ============================
+  // LOBBIES
+  // ============================
+
+  async createLobby(
     creator: string,
     betAmount: number,
     isPublic: boolean,
     maxPlayers: number = 2,
     password?: string,
     currency: 'ARS' | 'ETH' | 'USDT' | 'USDC' = 'ARS',
-    network?: 'ETH' | 'BASE'
-  ): LobbyData {
+    network?: 'ETH' | 'BASE',
+    isTest: boolean = true,
+  ): Promise<LobbyData> {
+    // Un solo lobby "waiting" por creador
+    for (const l of this.lobbies.values()) {
+      if (l.creatorId === creator && l.status === 'waiting') {
+        throw new Error('Ya tienes un lobby activo')
+      }
+    }
+
+    const economyMode: EconomyMode = currency === 'ARS' ? 'ARS_SANDBOX' : 'CRYPTO'
+
+    if (economyMode === 'CRYPTO' && !network) {
+      throw new Error('Network is required for crypto lobbies')
+    }
+
+    const resolvedNetwork = economyMode === 'ARS_SANDBOX' ? undefined : network
+
+    if (currency === 'ARS' && betAmount < 0) {
+      throw new Error('La apuesta no puede ser negativa')
+    }
+
     const lobbyId = `lobby_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
 
     const lobby: LobbyData = {
       id: lobbyId,
       creator,
-      creatorId: creator, // Store wallet ID for permission checks
+      creatorId: creator,
       isPublic,
       password,
       betAmount,
       currency,
-      network,
+      network: resolvedNetwork,
       maxPlayers,
-      players: [{ id: creator, name: creator, hand: [], hasCalledUno: false, isChallenged: false }],
+      players: [
+        {
+          id: creator,
+          name: creator,
+          hand: [],
+          hasCalledUno: false,
+          isChallenged: false,
+        },
+      ],
       createdAt: new Date(),
       status: 'waiting',
+      economyMode,
+      isTest,
     }
 
     this.lobbies.set(lobbyId, lobby)
     return lobby
   }
 
-  /**
-   * Join an existing lobby
-   */
-  joinLobby(lobbyId: string, playerId: string, password?: string): { success: boolean; error?: string } {
+  joinLobby(
+    lobbyId: string,
+    playerId: string,
+    password?: string,
+  ): { success: boolean; error?: string } {
     const lobby = this.lobbies.get(lobbyId)
     if (!lobby) return { success: false, error: 'Lobby not found' }
+
+    if (lobby.status !== 'waiting') {
+      return { success: false, error: 'Lobby is not open' }
+    }
 
     if (!lobby.isPublic && lobby.password !== password) {
       return { success: false, error: 'Invalid password' }
     }
 
-    if (lobby.players.length >= 10) {
+    if (lobby.players.length >= lobby.maxPlayers) {
       return { success: false, error: 'Lobby is full' }
     }
 
     if (lobby.players.some((p) => p.id === playerId)) {
-      return { success: false, error: 'Player already in lobby' }
+      console.log(`ℹ️ Player ${playerId} ya está en el lobby ${lobbyId}, join idempotente.`)
+      return { success: true }
+    }
+
+    // Validación de saldo ARS sandbox antes de unirse
+    if (lobby.currency === 'ARS' && lobby.betAmount > 0) {
+      const balance = this.getArsSandboxBalance(playerId)
+      if (balance < lobby.betAmount) {
+        return {
+          success: false,
+          error: 'Saldo ARS insuficiente para unirse al lobby',
+        }
+      }
     }
 
     lobby.players.push({
@@ -88,123 +158,178 @@ export class GameService {
     return { success: true }
   }
 
-  /**
-   * Start a game from a lobby with escrow
-   * Validates balance and creates escrow entries for all players
-   */
-  startGameWithEscrow(
+  cancelLobby(
     lobbyId: string,
-    playerBalances: Map<string, number> // playerId -> balance
-  ): { success: boolean; gameId?: string; escrowIds?: string[]; error?: string } {
+    requesterId: string,
+  ): { success: boolean; error?: string } {
     const lobby = this.lobbies.get(lobbyId)
     if (!lobby) return { success: false, error: 'Lobby not found' }
+
+    if (lobby.creatorId !== requesterId) {
+      return { success: false, error: 'Only the lobby creator can cancel' }
+    }
+
+    if (lobby.status !== 'waiting') {
+      return { success: false, error: 'Lobby already started or finished' }
+    }
+
+    lobby.status = 'cancelled'
+    return { success: true }
+  }
+
+  getLobby(lobbyId: string): LobbyData | null {
+    return this.lobbies.get(lobbyId) ?? null
+  }
+
+  getAllLobbies(): LobbyData[] {
+    return Array.from(this.lobbies.values()).filter(
+      (l) => l.status === 'waiting' || l.status === 'started',
+    )
+  }
+
+  getPublicLobbies(): LobbyData[] {
+    return Array.from(this.lobbies.values()).filter(
+      (l) => l.isPublic && l.status !== 'finished' && l.status !== 'cancelled',
+    )
+  }
+
+  getPrivateLobbies(): LobbyData[] {
+    return Array.from(this.lobbies.values()).filter(
+      (l) => !l.isPublic && l.status !== 'finished' && l.status !== 'cancelled',
+    )
+  }
+
+  getFreeLobbies(): LobbyData[] {
+    return Array.from(this.lobbies.values()).filter(
+      (l) => l.betAmount === 0 && l.status !== 'finished',
+    )
+  }
+
+  getPaidLobbies(): LobbyData[] {
+    return Array.from(this.lobbies.values()).filter((l) => l.betAmount > 0)
+  }
+
+  // ============================
+  // JUEGOS (CREACIÓN / ESTADO)
+  // ============================
+
+  startGame(lobbyId: string): { success: boolean; gameId?: string; error?: string } {
+    const lobby = this.lobbies.get(lobbyId)
+    if (!lobby) return { success: false, error: 'Lobby not found' }
+
+    if (lobby.status !== 'waiting') {
+      return { success: false, error: 'Lobby is not open' }
+    }
 
     if (lobby.players.length < 2) {
       return { success: false, error: 'Not enough players' }
     }
 
-    // Validar que todos los jugadores tengan suficiente balance
-    const escrowIds: string[] = []
-    for (const player of lobby.players) {
-      const balance = playerBalances.get(player.id) || 0
-      if (balance < lobby.betAmount) {
-        return {
-          success: false,
-          error: `Jugador ${player.id} no tiene suficiente balance para la apuesta`,
-        }
-      }
-
-      // Crear escrow para cada jugador
-      try {
-        const escrow = gameEscrowService.createEscrow(
-          `game_${Date.now()}`,
-          player.id,
-          lobby.betAmount
-        )
-        escrowIds.push(escrow.id)
-      } catch (err) {
-        return {
-          success: false,
-          error: `Error creando escrow: ${(err as Error).message}`,
-        }
-      }
-    }
-
-    // Crear el juego
     const gameId = `game_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount, lobby.currency, lobby.network)
+    const engine = new GameEngine(
+      gameId,
+      lobby.players,
+      lobby.betAmount,
+      lobby.currency,
+      lobby.network,
+    )
 
     this.games.set(gameId, engine)
-    
-    // Update lobby status to started (NO borrar el lobby, lo mantenemos para referencia)
     lobby.status = 'started'
     lobby.gameId = gameId
 
     console.log(
-      `🎮 Juego iniciado con escrow - GameID: ${gameId}, Jugadores: ${lobby.players.length}`
+      `🎮 Juego iniciado (sin escrow) - GameID: ${gameId}, Jugadores: ${lobby.players.length}, Moneda: ${lobby.currency}`,
+    )
+
+    return { success: true, gameId }
+  }
+
+  startGameWithEscrow(
+    lobbyId: string,
+    playerBalances?: Map<string, number>,
+  ): { success: boolean; gameId?: string; escrowIds?: string[]; error?: string } {
+    const lobby = this.lobbies.get(lobbyId)
+    if (!lobby) return { success: false, error: 'Lobby not found' }
+
+    if (lobby.status !== 'waiting') {
+      return { success: false, error: 'Lobby is not open' }
+    }
+
+    if (lobby.players.length < 2) {
+      return { success: false, error: 'Not enough players' }
+    }
+
+    const escrowIds: string[] = []
+    const gameId = `game_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
+
+    const getBalance = (playerId: string): number => {
+      if (lobby.currency === 'ARS') {
+        return this.getArsSandboxBalance(playerId)
+      }
+      return playerBalances?.get(playerId) ?? 0
+    }
+
+    try {
+      for (const player of lobby.players) {
+        const balance = getBalance(player.id)
+        if (balance < lobby.betAmount) {
+          return {
+            success: false,
+            error: `Jugador ${player.id} no tiene suficiente balance para la apuesta`,
+          }
+        }
+
+        if (lobby.currency === 'ARS' && lobby.betAmount > 0) {
+          this.debitArsSandbox(player.id, lobby.betAmount)
+        }
+
+        const escrow = gameEscrowService.createEscrow(
+          gameId,
+          player.id,
+          lobby.betAmount,
+        )
+        escrowIds.push(escrow.id)
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: `Error creando escrow: ${(err as Error).message}`,
+      }
+    }
+
+    const engine = new GameEngine(
+      gameId,
+      lobby.players,
+      lobby.betAmount,
+      lobby.currency,
+      lobby.network,
+    )
+
+    this.games.set(gameId, engine)
+    lobby.status = 'started'
+    lobby.gameId = gameId
+
+    console.log(
+      `🎮 Juego iniciado con escrow - GameID: ${gameId}, Jugadores: ${lobby.players.length}, Moneda: ${lobby.currency}`,
     )
 
     return { success: true, gameId, escrowIds }
   }
 
-  /**
-   * Start a game from a lobby (sin escrow, para compatibilidad)
-   */
-  startGame(lobbyId: string): { success: boolean; gameId?: string; error?: string } {
-    const lobby = this.lobbies.get(lobbyId)
-    if (!lobby) return { success: false, error: 'Lobby not found' }
-
-    if (lobby.players.length < 2) {
-      return { success: false, error: 'Not enough players' }
-    }
-
-    const gameId = `game_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
-    const engine = new GameEngine(gameId, lobby.players, lobby.betAmount, lobby.currency, lobby.network)
-
-    this.games.set(gameId, engine)
-    
-    // Update lobby status to started (NO borrar el lobby, lo mantenemos para referencia)
-    lobby.status = 'started'
-    lobby.gameId = gameId
-
-    return { success: true, gameId }
-  }
-
-  /**
-   * Cancel a lobby (only creator can cancel, only when waiting)
-   */
-  cancelLobby(lobbyId: string, requesterId: string): { success: boolean; error?: string } {
-    const lobby = this.lobbies.get(lobbyId)
-    if (!lobby) return { success: false, error: 'Lobby not found' }
-
-    // Only creator can cancel
-    if (lobby.creatorId !== requesterId) {
-      return { success: false, error: 'Only the lobby creator can cancel' }
-    }
-
-    // Remove the lobby
-    this.lobbies.delete(lobbyId)
-    return { success: true }
-  }
-
-  /**
-   * Get game state
-   */
-  getGameState(gameId: string): GameState | null {
+  getGameState(gameId: string): any {
     const engine = this.games.get(gameId)
     return engine ? engine.getState() : null
   }
 
-  /**
-   * Get game engine (for internal operations like timeout checking)
-   */
-  getGameEngine(gameId: string): any {
-    return this.games.get(gameId) || null
+  getGameEngine(gameId: string): GameEngine | null {
+    return this.games.get(gameId) ?? null
   }
 
-  /**
-   * Play a card in game
-   */
+  // ============================
+  // ACCIONES DE JUEGO
+  // ============================
+
   playCard(gameId: string, playerIndex: number, cardId: string, chosenColor?: any) {
     const engine = this.games.get(gameId)
     if (!engine) return { valid: false, error: 'Game not found' }
@@ -212,9 +337,6 @@ export class GameService {
     return engine.playCard(playerIndex, cardId, chosenColor)
   }
 
-  /**
-   * Draw a card in game
-   */
   drawCard(gameId: string, playerIndex: number) {
     const engine = this.games.get(gameId)
     if (!engine) return { valid: false, error: 'Game not found' }
@@ -222,9 +344,6 @@ export class GameService {
     return engine.drawCard(playerIndex)
   }
 
-  /**
-   * Call UNO
-   */
   callUno(gameId: string, playerIndex: number) {
     const engine = this.games.get(gameId)
     if (!engine) return { valid: false, error: 'Game not found' }
@@ -232,113 +351,80 @@ export class GameService {
     return engine.callUno(playerIndex)
   }
 
-  /**
-   * Choose color for WILD or WILD_DRAW_FOUR
-   */
   chooseColor(gameId: string, playerIndex: number, color: string) {
     const engine = this.games.get(gameId)
     if (!engine) return { valid: false, error: 'Game not found' }
 
-    // Validate color is valid
     const validColors = ['RED', 'BLUE', 'GREEN', 'YELLOW']
     if (!validColors.includes(color)) {
       return { valid: false, error: 'Invalid color' }
     }
 
-    return engine.chooseColor(playerIndex, color as any)
+    return engine.chooseColor(gameId ? gameId as any : playerIndex as any, color as any)
   }
 
   /**
-   * List all lobbies (public and private) - excluding finished games
+   * NUEVO: pasar turno después de robar (botón "Pass Turn")
    */
-  getAllLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.status !== 'finished' && l.status !== 'cancelled')
+  passTurn(gameId: string, playerIndex: number): { success: boolean; error?: string } {
+    const engine = this.games.get(gameId)
+    if (!engine) {
+      return { success: false, error: 'Game not found' }
+    }
+
+    const result = engine.passTurn(playerIndex)
+    if (!result.valid) {
+      return { success: false, error: result.error }
+    }
+
+    return { success: true }
   }
 
-  /**
-   * List all public lobbies - excluding finished games
-   */
-  getPublicLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.isPublic && l.status !== 'finished' && l.status !== 'cancelled')
-  }
+  // ============================
+  // FIN DE JUEGO + ESCROW
+  // ============================
 
-  /**
-   * List all private lobbies - excluding finished games
-   */
-  getPrivateLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => !l.isPublic && l.status !== 'finished' && l.status !== 'cancelled')
-  }
-
-  /**
-   * List all free lobbies (betAmount === 0) - excluding finished games
-   */
-  getFreeLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.betAmount === 0 && l.status !== 'finished')
-  }
-
-  /**
-   * List all paid lobbies (betAmount > 0)
-   */
-  getPaidLobbies(): LobbyData[] {
-    return Array.from(this.lobbies.values()).filter((l) => l.betAmount > 0)
-  }
-
-  /**
-   * Get leaderboard (top N by total wins + points)
-   */
-  getLeaderboard(limit: number = 50) {
-    // This would typically come from UserService
-    return []
-  }
-
-  /**
-   * Finish a game and distribute pot to winners
-   * Releases escrow to winners and returns to losers
-   */
-  finishGameWithEscrow(
+  async finishGameWithEscrow(
     gameId: string,
     winnerId: string,
-    allPlayerIds: string[]
-  ): { success: boolean; distribution?: any; error?: string } {
+    allPlayerIds: string[],
+  ): Promise<{ success: boolean; distribution?: any; error?: string }> {
     const engine = this.games.get(gameId)
     if (!engine) return { success: false, error: 'Game not found' }
 
     try {
-      // Obtener información del juego
       const gameState = engine.getState()
-      const betAmount = gameState.bet || 0
-      const totalPot = gameState.pot || betAmount * allPlayerIds.length
+      const betAmount = (gameState as any).bet || 0
+      const totalPot = (gameState as any).pot || betAmount * allPlayerIds.length
 
-      // Calcular premios
       const winners = [
         {
           userId: winnerId,
-          prizeAmount: totalPot, // Winner gets entire pot
+          prizeAmount: totalPot,
         },
       ]
 
-      // Distribuir pot
+      // IMPORTANTE:
+      // El guardado en BD ya lo hace el GameEngine (saveMatchResult).
+      // Aquí solo distribuimos escrow + cerramos lobby.
       const distribution = gameEscrowService.distributePot(gameId, winners)
 
-      // Marcar el lobby como 'finished' en lugar de solo remover el juego
       this.markLobbyAsFinished(gameId)
-
-      // Remover juego
       this.games.delete(gameId)
 
       console.log(
-        `✅ Juego finalizado con distribución de escrow - GameID: ${gameId}, Ganador: ${winnerId}`
+        `✅ Juego finalizado con distribución de escrow - GameID: ${gameId}, Ganador: ${winnerId}`,
       )
 
       return { success: true, distribution }
     } catch (err) {
-      return { success: false, error: `Error finishing game: ${(err as Error).message}` }
+      return {
+        success: false,
+        error: `Error finishing game: ${(err as Error).message}`,
+      }
     }
   }
 
-  /**
-   * Mark lobby as finished when game ends
-   */
   private markLobbyAsFinished(gameId: string): void {
     for (const [lobbyId, lobby] of this.lobbies.entries()) {
       if (lobby.gameId === gameId) {
@@ -349,18 +435,11 @@ export class GameService {
     }
   }
 
-  /**
-   * Public method to force mark lobby as finished (when escrow fails)
-   */
   forceMarkLobbyAsFinished(gameId: string): void {
     this.markLobbyAsFinished(gameId)
-    // Also delete the game from memory
     this.games.delete(gameId)
   }
 
-  /**
-   * Cancel a game and return all escrow
-   */
   cancelGameWithEscrow(gameId: string): { success: boolean; returned?: any; error?: string } {
     const engine = this.games.get(gameId)
     if (!engine) return { success: false, error: 'Game not found' }
@@ -373,14 +452,10 @@ export class GameService {
 
       return { success: true, returned: result }
     } catch (err) {
-      return { success: false, error: `Error cancelling game: ${(err as Error).message}` }
+      return {
+        success: false,
+        error: `Error cancelling game: ${(err as Error).message}`,
+      }
     }
-  }
-
-  /**
-   * Get lobby details
-   */
-  getLobby(lobbyId: string): LobbyData | null {
-    return this.lobbies.get(lobbyId) || null
   }
 }

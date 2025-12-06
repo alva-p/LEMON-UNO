@@ -6,7 +6,6 @@ import "../src/UnoLobbyV2.sol";
 
 contract DeployUnoLobby is Script {
     function run() external {
-        // Replace with your real dev wallet before broadcasting
         address dev = vm.envAddress("DEV_WALLET");
         vm.startBroadcast();
         new UnoLobbyV2(dev);
