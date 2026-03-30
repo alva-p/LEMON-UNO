@@ -241,7 +241,7 @@ app.post('/debug/seed-game', requireAdminKey, async (req: Request, res: Response
  * Body: { amount?: number }
  * Devuelve: { balance: number }
  */
-app.post('/sandbox/ars/faucet', requireAdminKey, (req: Request, res: Response) => {
+app.post('/sandbox/ars/faucet', (req: Request, res: Response) => {
   let walletId = (req.headers['x-wallet-id'] as string) || 'anon'
 
   const { amount } = req.body ?? {}
@@ -268,7 +268,7 @@ app.post('/sandbox/ars/faucet', requireAdminKey, (req: Request, res: Response) =
  * GET /sandbox/ars/balance
  * Headers: { "x-wallet-id": string }
  */
-app.get('/sandbox/ars/balance', requireAdminKey, (req: Request, res: Response) => {
+app.get('/sandbox/ars/balance', (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
   const balance = gameService.getArsSandboxBalance(walletId)
   res.json({ balance })
