@@ -13,7 +13,7 @@ function getApiUrl(): string {
   const host = window.location.hostname
   if (host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('172.'))
     return `http://${host}:3001`
-  return 'https://api.alva-p.xyz'
+  return 'https://lemon-uno.onrender.com'
 }
 
 type Chain = 'BASE' | 'ETH_SEPOLIA' | 'POLYGON_AMOY'

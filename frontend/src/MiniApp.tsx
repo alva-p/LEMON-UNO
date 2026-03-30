@@ -36,7 +36,7 @@ function getApiUrl(): string {
   }
 
   // 4) Producción fallback seguro
-  return "https://api.alva-p.xyz";
+  return "https://lemon-uno.onrender.com";
 }
 
 

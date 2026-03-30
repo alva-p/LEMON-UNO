@@ -28,7 +28,7 @@ function getApiUrl(): string {
   }
 
   // Fallback seguro
-  return 'https://api.alva-p.xyz'
+  return 'https://lemon-uno.onrender.com'
 }
 
 export interface User {
