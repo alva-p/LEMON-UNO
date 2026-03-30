@@ -465,7 +465,7 @@ export class GameEngine {
   challengeWildDrawFour(
     accuserIndex: number,
     targetIndex: number,
-  ): { valid: boolean; error?: string } {
+  ): { valid: boolean; error?: string; challengeResult?: 'success' | 'failed' } {
     const accuser = this.state.players[accuserIndex]
     const target = this.state.players[targetIndex]
 
@@ -476,19 +476,30 @@ export class GameEngine {
       return { valid: false, error: 'Last card was not WILD_DRAW_FOUR' }
     }
 
-    const wasLegal = canPlayWildDrawFour(target.hand, topCard)
+    // Usar la carta que estaba ANTES del +4 para chequear si fue legal
+    const previousTopCard = this.state.discardPile[this.state.discardPile.length - 2]
+    const wasLegal = previousTopCard
+      ? canPlayWildDrawFour(target.hand, previousTopCard)
+      : true
+
+    // Limpiar pendingDraw — la resolución del challenge lo reemplaza
+    this.state.pendingDrawCount = 0
+    this.state.pendingDrawType = undefined
 
     if (wasLegal) {
+      // Desafío fallido: el +4 era legal → el acusador roba 6 y pierde su turno
       const { cards, newDeck } = drawCards(this.state.deck, this.state.discardPile, 6)
       this.state.deck = newDeck
       accuser.hand.push(...cards)
+      this.advanceToNextPlayer()
+      return { valid: true, challengeResult: 'failed' }
     } else {
+      // Desafío exitoso: el +4 era ilegal → el que jugó (+4) roba 4; acusador continúa su turno
       const { cards, newDeck } = drawCards(this.state.deck, this.state.discardPile, 4)
       this.state.deck = newDeck
       target.hand.push(...cards)
+      return { valid: true, challengeResult: 'success' }
     }
-
-    return { valid: true }
   }
 
   /**

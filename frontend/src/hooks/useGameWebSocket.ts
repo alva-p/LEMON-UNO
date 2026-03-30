@@ -29,6 +29,9 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [reconnectKey, setReconnectKey] = useState(0)
 
   useEffect(() => {
     if (!gameId || playerIndex === undefined) {
@@ -68,6 +71,7 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
     ws.onopen = () => {
       setConnected(true)
       setError(null)
+      reconnectAttemptsRef.current = 0
       console.log(`✅ WebSocket connected`)
     }
 
@@ -93,14 +97,27 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
     ws.onclose = () => {
       setConnected(false)
       console.log(`🔌 WebSocket closed`)
+
+      const MAX_RETRIES = 5
+      if (reconnectAttemptsRef.current < MAX_RETRIES) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 16000)
+        reconnectAttemptsRef.current++
+        console.log(`🔄 Reconectando en ${delay}ms (intento ${reconnectAttemptsRef.current}/${MAX_RETRIES})`)
+        reconnectTimerRef.current = setTimeout(() => {
+          setReconnectKey((k) => k + 1)
+        }, delay)
+      } else {
+        setError('Conexión perdida. Por favor recargá la página.')
+      }
     }
 
     wsRef.current = ws
 
     return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       ws.close()
     }
-  }, [gameId, playerIndex])
+  }, [gameId, playerIndex, reconnectKey])
 
   const sendMessage = useCallback(
     (type: string, payload?: any) => {
@@ -126,6 +143,14 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
     sendMessage('CALL_UNO')
   }, [sendMessage])
 
+  const challengeUno = useCallback((targetIndex: number) => {
+    sendMessage('CHALLENGE_UNO', { targetIndex })
+  }, [sendMessage])
+
+  const challengeWildDrawFour = useCallback((targetIndex: number) => {
+    sendMessage('CHALLENGE_WILD_DRAW_FOUR', { targetIndex })
+  }, [sendMessage])
+
   return {
     gameState,
     connected,
@@ -133,5 +158,7 @@ export function useGameWebSocket(gameId: string, playerIndex: number) {
     playCard,
     drawCard,
     callUno,
+    challengeUno,
+    challengeWildDrawFour,
   }
 }

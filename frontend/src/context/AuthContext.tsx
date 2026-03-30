@@ -71,25 +71,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
      🔄 Restaurar sesión + detectar Webview
      ============================================================ */
   useEffect(() => {
-    setIsWebViewMode(isWebView())
+    const init = async () => {
+      const webViewMode = isWebView()
+      setIsWebViewMode(webViewMode)
 
-    const saved = localStorage.getItem('lemon_user')
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved)
-        if (!parsed.balances) {
-          parsed.balances = {
-            ARS: parsed.balance || 0,
-            ETH: 0,
-            USDT: 0,
-            USDC: 0
-          }
+      // ── DEV PLAYER OVERRIDE ──────────────────────────────────────
+      // Tab 1: http://localhost:5173?player=alice
+      // Tab 2: http://localhost:5173?player=bob
+      if (!webViewMode) {
+        const params = new URLSearchParams(window.location.search)
+        const nameFromUrl = params.get('player')
+        if (nameFromUrl) sessionStorage.setItem('dev_player', nameFromUrl)
+        const devName = nameFromUrl || sessionStorage.getItem('dev_player')
+
+        if (devName) {
+          const mockWalletId = `dev_${devName}`
+
+          // Acreditar saldo ARS en el backend para que pueda unirse a lobbies
+          try {
+            await fetch(`${getApiUrl()}/sandbox/ars/faucet`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-wallet-id': mockWalletId },
+              body: JSON.stringify({ amount: 5000 }),
+            })
+          } catch { /* ignorar si el backend no está disponible aún */ }
+
+          setUser({
+            walletId: mockWalletId,
+            address: mockWalletId,
+            username: devName,
+            balance: 5000,
+            balances: { ARS: 5000, ETH: 0, USDT: 0, USDC: 0 },
+            wins: 0,
+            points: 0,
+          })
+          setIsLoading(false)
+          return
         }
-        setUser(parsed)
-      } catch {}
+      }
+      // ────────────────────────────────────────────────────────────
+
+      const saved = localStorage.getItem('lemon_user')
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved)
+          if (!parsed.balances) {
+            parsed.balances = {
+              ARS: parsed.balance || 0,
+              ETH: 0,
+              USDT: 0,
+              USDC: 0
+            }
+          }
+          setUser(parsed)
+        } catch {}
+      }
+
+      setIsLoading(false)
     }
 
-    setIsLoading(false)
+    init()
   }, [])
 
   /* ============================================================

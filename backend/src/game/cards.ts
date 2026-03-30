@@ -282,8 +282,7 @@ export function getPlayableCards(
     .map((card) => card.id)
 }
 
-// Check if WILD_DRAW_FOUR is legal
-// Por ahora, +4 siempre es legal (la validación avanzada/challenge puede ir acá)
-export function canPlayWildDrawFour(hand: Card[], topCard: Card): boolean {
+// +4 siempre se puede jugar (sin restricción de color) y se apila con otros +4.
+export function canPlayWildDrawFour(_hand: Card[], _topCard: Card): boolean {
   return true
 }

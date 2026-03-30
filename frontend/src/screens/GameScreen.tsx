@@ -1,7 +1,8 @@
 /**
  * Game Screen - Play UNO with enhanced mobile UX
  */
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
+import { sounds } from '../utils/sounds'
 
 export interface GameScreenProps {
   gameState: any
@@ -9,8 +10,11 @@ export interface GameScreenProps {
   onPlayCard: (cardId: string, chosenColor?: string) => void
   onDrawCard: () => void
   onPassTurn: () => void
+  onCallUno: () => void
+  onChallengeUno: (targetIndex: number) => void
   connected: boolean
   onGameEnd?: () => void
+  onLeaderboard?: () => void
 }
 
 export const GameScreen: React.FC<GameScreenProps> = ({
@@ -19,12 +23,19 @@ export const GameScreen: React.FC<GameScreenProps> = ({
   onPlayCard,
   onDrawCard,
   onPassTurn,
+  onCallUno,
+  onChallengeUno,
   connected,
   onGameEnd,
+  onLeaderboard,
 }) => {
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [lastPlayedCardId, setLastPlayedCardId] = useState<string | null>(null)
-  const [timeRemaining, setTimeRemaining] = useState(15000) // in milliseconds
+  const [timeRemaining, setTimeRemaining] = useState(15000)
+  const [discardAnimKey, setDiscardAnimKey] = useState(0)
+  const [winSoundPlayed, setWinSoundPlayed] = useState(false)
+  const prevTopCardIdRef = useRef<string | null>(null)
+  const prevPendingRef = useRef(0)
 
   // Update timer based on gameState
   useEffect(() => {
@@ -40,6 +51,34 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     }, 100)
     return () => clearInterval(interval)
   }, [])
+
+  // Animate discard pile when top card changes
+  const topCardId = gameState?.discardPile?.[gameState.discardPile.length - 1]?.id
+  useEffect(() => {
+    if (topCardId && topCardId !== prevTopCardIdRef.current) {
+      prevTopCardIdRef.current = topCardId
+      setDiscardAnimKey((k) => k + 1)
+    }
+  }, [topCardId])
+
+  // Sound: penalty accumulation
+  const pendingCount = gameState?.pendingDrawCount ?? 0
+  useEffect(() => {
+    if (pendingCount > prevPendingRef.current) {
+      sounds.penalty()
+    }
+    prevPendingRef.current = pendingCount
+  }, [pendingCount])
+
+  // Sound: win / lose
+  useEffect(() => {
+    if (gameState?.winner && !winSoundPlayed) {
+      setWinSoundPlayed(true)
+      const myId = gameState.players?.[playerIndex]?.id
+      if (myId && gameState.winner === myId) sounds.win()
+      else sounds.lose()
+    }
+  }, [gameState?.winner])
 
   if (!gameState) {
     return (
@@ -66,6 +105,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     gameState.pendingDrawType || undefined
 
   const canPassTurn = isMyTurn && hasDrawnThisTurn && !cardPlayedThisTurn
+
+  // UNO: el jugador local tiene 1 carta y aún no gritó UNO
+  const shouldShowUnoButton = player.hand.length === 1 && !player.hasCalledUno
+
+  // Oponentes atrapables: tienen 1 carta y no llamaron UNO
+  const catchableOpponents = gameState.players
+    .map((p: any, idx: number) => ({ ...p, idx }))
+    .filter((p: any) => p.idx !== playerIndex && p.hand.length === 1 && !p.hasCalledUno)
 
   const getCardColor = (card: any) => {
     if (card.color === 'RED') return '#ff4444'
@@ -140,11 +187,14 @@ export const GameScreen: React.FC<GameScreenProps> = ({
     return playableCardIds.includes(cardId)
   }
 
+  const iWon = gameState.winner != null && gameState.winner === player?.id
+
   const handlePlayCard = (cardId: string) => {
     const card = player.hand.find((c: any) => c.id === cardId)
     if (!card) return
 
-    // Si es WILD o +4, abrimos el selector de color
+    sounds.playCard()
+
     if (card.type === 'WILD' || card.type === 'WILD_DRAW_FOUR') {
       setLastPlayedCardId(cardId)
       setShowColorPicker(true)
@@ -161,6 +211,11 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       setShowColorPicker(false)
       setLastPlayedCardId(null)
     }
+  }
+
+  const handleDrawCard = () => {
+    sounds.drawCard()
+    onDrawCard()
   }
 
   return (
@@ -204,6 +259,35 @@ export const GameScreen: React.FC<GameScreenProps> = ({
         </div>
       </div>
 
+      {/* Opponents Panel */}
+      <div className="opponents-strip">
+        {gameState.players
+          .map((p: any, idx: number) => ({ ...p, idx }))
+          .filter((p: any) => p.idx !== playerIndex)
+          .map((opp: any) => {
+            const isOppTurn = gameState.currentPlayerIndex === opp.idx
+            const hasUno = opp.hand.length === 1
+            return (
+              <div
+                key={opp.idx}
+                className={`opponent-card${isOppTurn ? ' opp-active' : ''}${hasUno ? ' opp-uno-alert' : ''}`}
+              >
+                <div className="opp-name">{opp.name?.slice(0, 10) || `J${opp.idx + 1}`}</div>
+                <div className="opp-cards-count">
+                  <span>🃏</span>
+                  <span className="opp-card-num">{opp.hand.length}</span>
+                </div>
+                {hasUno && (
+                  <div className={`opp-uno-badge ${opp.hasCalledUno ? 'called' : 'uncalled'}`}>
+                    {opp.hasCalledUno ? 'UNO' : '⚠️ UNO'}
+                  </div>
+                )}
+                {isOppTurn && <div className="opp-turn-label">TURNO</div>}
+              </div>
+            )
+          })}
+      </div>
+
       {/* Game Board */}
       <div className="game-board">
         {/* Discard Pile (Center) */}
@@ -212,7 +296,8 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             <div className="pile-label">Descartadas</div>
             {topCard && (
               <div
-                className="card-large"
+                key={discardAnimKey}
+                className="card-large card-animating"
                 style={{
                   backgroundColor: gameState.currentWildColor
                     ? gameState.currentWildColor === 'RED'
@@ -241,7 +326,7 @@ export const GameScreen: React.FC<GameScreenProps> = ({
               className={`deck-button ${
                 isMyTurn && !hasDrawnThisTurn ? 'active' : ''
               }`}
-              onClick={onDrawCard}
+              onClick={handleDrawCard}
               disabled={!isMyTurn || hasDrawnThisTurn}
               title={
                 !isMyTurn
@@ -256,6 +341,41 @@ export const GameScreen: React.FC<GameScreenProps> = ({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Penalización acumulada (+2 o +4) */}
+      {pendingDrawCount > 0 && (
+        <div className={`penalty-banner${pendingDrawType === 'DRAW_TWO' ? ' penalty-draw-two' : ''}`}>
+          <span className="penalty-icon">⚡</span>
+          <span className="penalty-text">
+            +{pendingDrawCount} acumulados
+            {isMyTurn
+              ? ` — jugá ${pendingDrawType === 'DRAW_TWO' ? '+2' : '+4'} o robás todo`
+              : ` — ${currentPlayer.name?.slice(0, 10)} debe tirar ${pendingDrawType === 'DRAW_TWO' ? '+2' : '+4'} o robar`}
+          </span>
+        </div>
+      )}
+
+      {/* Barra de acciones UNO / Desafíos */}
+      <div className="uno-actions-bar">
+        {/* Botón UNO propio */}
+        {shouldShowUnoButton && (
+          <button className="btn-uno" onClick={() => { sounds.uno(); onCallUno() }}>
+            🟡 ¡UNO!
+          </button>
+        )}
+
+        {/* Atrapar oponentes que no gritaron UNO */}
+        {catchableOpponents.map((opp: any) => (
+          <button
+            key={opp.idx}
+            className="btn-catch-uno"
+            onClick={() => onChallengeUno(opp.idx)}
+          >
+            🎯 ¡Atrapar a {opp.name?.slice(0, 8) || `J${opp.idx + 1}`}!
+          </button>
+        ))}
+
       </div>
 
       {/* Pass Turn Button – entre tablero y mi mano */}
@@ -365,34 +485,98 @@ export const GameScreen: React.FC<GameScreenProps> = ({
       {gameState.winner && (
         <div className="modal-overlay">
           <div className="modal-content game-over">
-            <div className="modal-icon">🏆</div>
-            <h2>¡Juego Terminado!</h2>
+            <div className="modal-icon">{iWon ? '🏆' : '💸'}</div>
+            <h2 className={iWon ? 'win-title' : 'lose-title'}>
+              {iWon ? '¡GANASTE!' : '¡PERDISTE!'}
+            </h2>
+
             <p className="winner-name">
-              {
-                gameState.players[
-                  gameState.players.findIndex((p: any) => p.id === gameState.winner)
-                ]?.name
-              }{' '}
-              ganó
+              {gameState.players.find((p: any) => p.id === gameState.winner)?.name} ganó
             </p>
-            <div className="prize-details">
-              <p className="pot-info">
-                Pozo total:{' '}
-                {gameState.currency === 'ARS' ? '$' : ''}
-                {gameState.pot || gameState.betAmount * gameState.players.length}{' '}
-                {gameState.currency}
-                {gameState.network && ` (${gameState.network})`}
-              </p>
-              <p className="winner-prize">
-                🎁 Premio:{' '}
-                {gameState.currency === 'ARS' ? '$' : ''}
-                {gameState.pot || gameState.betAmount * gameState.players.length}{' '}
-                {gameState.currency}
-              </p>
+
+            {/* Final standings */}
+            {(() => {
+              const bet = gameState.betAmount || 0
+              const pot = gameState.pot || bet * gameState.players.length
+              const houseFee = gameState.houseFee ?? (gameState.currency === 'ARS' ? Math.floor(pot * 0.03) : 0)
+              const winnerPrize = gameState.winnerPrize ?? (pot - houseFee)
+              const cur = gameState.currency === 'ARS' ? '$' : ''
+              const sym = gameState.currency !== 'ARS' ? ` ${gameState.currency}` : ''
+              const netWin = winnerPrize - bet   // ganancia neta del ganador
+              const netLose = -bet               // pérdida de cada perdedor
+              const hasBet = bet > 0
+
+              return (
+                <div className="final-standings">
+                  {[...gameState.players]
+                    .map((p: any, idx: number) => ({ ...p, idx }))
+                    .sort((a: any, b: any) =>
+                      a.id === gameState.winner ? -1 : b.id === gameState.winner ? 1 : a.hand.length - b.hand.length
+                    )
+                    .map((p: any, rank: number) => {
+                      const isWinner = p.id === gameState.winner
+                      return (
+                        <div
+                          key={p.idx}
+                          className={`standing-row${isWinner ? ' winner-row' : ''}`}
+                        >
+                          <span className="standing-rank">
+                            {rank === 0 ? '🥇' : rank === 1 ? '🥈' : '🥉'}
+                          </span>
+                          <span className="standing-name">
+                            {p.name?.slice(0, 12)}
+                            {p.idx === playerIndex ? ' (vos)' : ''}
+                          </span>
+                          <span className="standing-cards">
+                            {isWinner ? 0 : p.hand.length} 🃏
+                          </span>
+                          {hasBet && (
+                            <span className={`standing-prize ${isWinner ? 'prize-win' : 'prize-lose'}`}>
+                              {isWinner
+                                ? `+${cur}${netWin}${sym}`
+                                : `${cur}${netLose}${sym}`}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
+                </div>
+              )
+            })()}
+
+            {(() => {
+              const bet2 = gameState.betAmount || 0
+              const pot2 = gameState.pot || bet2 * gameState.players.length
+              const fee2 = gameState.houseFee ?? (gameState.currency === 'ARS' ? Math.floor(pot2 * 0.03) : 0)
+              const prize2 = gameState.winnerPrize ?? (pot2 - fee2)
+              const cur2 = gameState.currency === 'ARS' ? '$' : ''
+              const sym2 = gameState.currency !== 'ARS' ? ` ${gameState.currency}` : ''
+              return (
+                <div className="prize-details">
+                  <p className="pot-info">
+                    Pozo: {cur2}{pot2}{sym2}
+                    {gameState.network && ` · ${gameState.network}`}
+                    {fee2 > 0 && ` · fee 3%: ${cur2}${fee2}${sym2}`}
+                  </p>
+                  {iWon && (
+                    <p className="winner-prize">
+                      🎁 Premio: {cur2}{prize2}{sym2}
+                    </p>
+                  )}
+                </div>
+              )
+            })()}
+
+            <div className="game-over-actions">
+              <button className="btn-play-again" onClick={() => onGameEnd?.()}>
+                ← Volver al Home
+              </button>
+              {onLeaderboard && (
+                <button className="btn-leaderboard" onClick={() => onLeaderboard()}>
+                  🏆 Ver Rankings
+                </button>
+              )}
             </div>
-            <button className="btn-play-again" onClick={() => onGameEnd?.()}>
-              Volver al Home
-            </button>
           </div>
         </div>
       )}

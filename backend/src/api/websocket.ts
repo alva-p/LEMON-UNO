@@ -157,17 +157,35 @@ export class GameWebSocketHandler {
 
   /**
    * Handle CHALLENGE_UNO message
+   * Acusador detectó que un jugador tiene 1 carta y no gritó UNO
    */
   private handleChallengeUno(playerIndex: number, payload: { targetIndex: number }): void {
-    // Implementation would call engine.challengeUno() and broadcast result
+    if (payload?.targetIndex === undefined) {
+      this.sendError(playerIndex, 'targetIndex required')
+      return
+    }
+    const result = this.gameService.challengeUno(this.gameId, playerIndex, payload.targetIndex)
+    if (!result.valid) {
+      this.sendError(playerIndex, result.error || 'Cannot challenge UNO')
+      return
+    }
     this.broadcastGameState()
   }
 
   /**
    * Handle CHALLENGE_WILD_DRAW_FOUR message
+   * El jugador actual desafía al que acaba de jugar +4
    */
   private handleChallengeWildDrawFour(playerIndex: number, payload: { targetIndex: number }): void {
-    // Implementation would call engine.challengeWildDrawFour() and broadcast result
+    if (payload?.targetIndex === undefined) {
+      this.sendError(playerIndex, 'targetIndex required')
+      return
+    }
+    const result = this.gameService.challengeWildDrawFour(this.gameId, playerIndex, payload.targetIndex)
+    if (!result.valid) {
+      this.sendError(playerIndex, result.error || 'Cannot challenge Wild Draw Four')
+      return
+    }
     this.broadcastGameState()
   }
 
@@ -205,7 +223,13 @@ export class GameWebSocketHandler {
     // Check if game has ended and finish it
     if (gameState.winner && !gameState.finished) {
       console.log(`🏆 Juego terminado! Ganador: ${gameState.winner}`)
-      
+
+      const pot = gameState.pot || gameState.bet * gameState.players.length
+      const houseFee = gameState.currency === 'ARS' && pot > 0
+        ? Math.floor(pot * 0.05) : 0
+      gameState.houseFee = houseFee
+      gameState.winnerPrize = pot - houseFee
+
       // Intentar finalizar con escrow primero
       const result = await this.gameService.finishGameWithEscrow(this.gameId, gameState.winner, gameState.players)
       

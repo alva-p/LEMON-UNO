@@ -5,7 +5,8 @@ import { AuthScreen } from './screens/AuthScreen'
 import { LobbyScreen } from './screens/LobbyScreen'
 import { useGameWebSocket, GameScreen as GameScreenEnum } from './hooks/useGameWebSocket'
 import { DeeplinkListener, DeeplinkAction } from './utils/deeplinks'
-import { callSmartContract, TransactionResult, ChainId } from './lemon-mini-app-sdk'
+import { callSmartContract, TransactionResult, ChainId, ContractStandard } from './lemon-mini-app-sdk'
+import { ethers } from 'ethers'
 
 // Lazy load GameScreen para mejorar performance
 const GameScreen = lazy(() => import('./screens/GameScreen').then(m => ({ default: m.GameScreen })))
@@ -43,7 +44,7 @@ function getApiUrl(): string {
 type Screen = 'lobby' | 'waiting' | 'game' | 'leaderboard'
 
 export const MiniApp: React.FC = () => {
-  const { isAuthenticated, user } = useAuth()
+  const { isAuthenticated, user, updateBalance } = useAuth()
   const [screen, setScreen] = useState<Screen>('lobby')
   const [gameId, setGameId] = useState<string | null>(null)
   const [playerIndex, setPlayerIndex] = useState<number | null>(null)
@@ -56,13 +57,24 @@ export const MiniApp: React.FC = () => {
   const walletId = user?.address || `wallet_${Math.random().toString(36).slice(2, 11)}`
 
   // Solo conectarse al WebSocket cuando estamos en game screen, no en waiting
-  const { gameState, connected, error: wsError, playCard, drawCard, callUno } = useGameWebSocket(
+  const { gameState, connected, error: wsError, playCard, drawCard, callUno, challengeUno } = useGameWebSocket(
     screen === 'game' ? (gameId || '') : '',
     playerIndex ?? 0
   )
 
   useEffect(() => {
     setWebview(isWebView())
+
+    // Handle invite link query params (?lobbyId=...&password=...)
+    const params = new URLSearchParams(window.location.search)
+    const inviteLobbyId = params.get('lobbyId')
+    if (inviteLobbyId) {
+      const invitePassword = params.get('password') || undefined
+      // Clean the URL so it doesn't re-trigger on refresh
+      window.history.replaceState({}, '', window.location.pathname)
+      // Join after auth is confirmed (slight delay)
+      setTimeout(() => handleJoinGame(inviteLobbyId, invitePassword), 800)
+    }
 
     // Setup deeplink listeners
     const unsubscribeLaunch = DeeplinkListener.on(DeeplinkAction.LAUNCH_WEBVIEW, (data) => {
@@ -155,9 +167,124 @@ export const MiniApp: React.FC = () => {
     }
   }
 
+  /**
+   * Determina el chainId del SDK según la red del lobby
+   */
+  const getLobbyChainId = (network?: string): ChainId => {
+    if (network === 'BASE') return ChainId.BASE
+    if (network === 'ETH') return ChainId.ETH_SEPOLIA
+    return ChainId.POLYGON_AMOY
+  }
+
+  /**
+   * Obtiene la dirección del token ERC20 según currency y network
+   */
+  const getTokenAddress = (currency: string, network?: string): string => {
+    if (currency === 'USDC') {
+      return network === 'ETH'
+        ? import.meta.env.VITE_SEPOLIA_USDC_ADDRESS || '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'
+        : import.meta.env.VITE_TEST_USDC_ADDRESS || '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'
+    }
+    if (currency === 'USDT') {
+      return network === 'ETH'
+        ? import.meta.env.VITE_SEPOLIA_USDT_ADDRESS || '0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0'
+        : import.meta.env.VITE_TEST_USDT_ADDRESS || '0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0'
+    }
+    return ''
+  }
+
+  /**
+   * Join on-chain: llama a `joinLobby(contractLobbyId)` en UnoLobbyV2 via Lemon SDK.
+   * Para ERC20 (USDC/USDT) hace un batch: approve + joinLobby.
+   * Para ETH envía el valor nativo.
+   */
+  const joinLobbyOnChain = async (lobby: any): Promise<boolean> => {
+    const contractLobbyId = lobby.contractLobbyId
+    if (!contractLobbyId) return true // sin contrato on-chain → skip, continúa igual
+
+    const contractAddress = import.meta.env.VITE_CONTRACT_ADDRESS_BASE_SEPOLIA
+    if (!contractAddress) {
+      console.warn('VITE_CONTRACT_ADDRESS_BASE_SEPOLIA no configurado. Saltando join on-chain.')
+      return true
+    }
+
+    const chainId = getLobbyChainId(lobby.network)
+    const betAmountStr = lobby.betAmount?.toString() ?? '0'
+
+    try {
+      let result
+
+      if (lobby.currency === 'ETH') {
+        // ETH nativo: joinLobby payable
+        const valueWei = ethers.parseEther(betAmountStr).toString()
+        result = await callSmartContract({
+          contracts: [{
+            contractAddress,
+            functionName: 'joinLobby',
+            functionParams: [contractLobbyId],
+            value: valueWei,
+            chainId,
+          }],
+          titleValues: { amount: betAmountStr, currency: 'ETH' },
+          descriptionValues: { lobbyId: contractLobbyId },
+        })
+      } else if (lobby.currency === 'USDC' || lobby.currency === 'USDT') {
+        // ERC20: approve (Permit2 vía SDK) + joinLobby en batch
+        const tokenAddress = getTokenAddress(lobby.currency, lobby.network)
+        const decimals = 6 // USDC/USDT usan 6 decimales
+        const amountWei = (parseFloat(betAmountStr) * 10 ** decimals).toString()
+
+        result = await callSmartContract({
+          contracts: [
+            {
+              contractAddress: tokenAddress,
+              functionName: 'approve',
+              functionParams: [contractAddress, amountWei],
+              value: '0',
+              chainId,
+              contractStandard: ContractStandard.ERC20,
+            },
+            {
+              contractAddress,
+              functionName: 'joinLobby',
+              functionParams: [contractLobbyId],
+              value: '0',
+              chainId,
+            },
+          ],
+          titleValues: { amount: betAmountStr, currency: lobby.currency },
+          descriptionValues: { lobbyId: contractLobbyId },
+        })
+      } else {
+        return true // ARS u otros → sin on-chain
+      }
+
+      if (result.result === TransactionResult.FAILED) {
+        throw new Error(result.error?.message || 'Error en transacción on-chain')
+      }
+      if (result.result === TransactionResult.CANCELLED) {
+        throw new Error('Transacción cancelada por el usuario')
+      }
+
+      console.log('✅ Join on-chain exitoso. TxHash:', result.data?.txHash)
+      return true
+    } catch (err) {
+      console.error('Error en join on-chain:', err)
+      throw err
+    }
+  }
+
   const handleJoinGame = async (lobbyId: string, password?: string) => {
     try {
       console.log(`🎮 Joining lobby ${lobbyId}...`)
+
+      // Si el lobby es crypto con contractLobbyId → join on-chain primero
+      const lobbyData = lobbies.find((l: any) => l.id === lobbyId)
+      if (lobbyData?.currency !== 'ARS' && lobbyData?.contractLobbyId) {
+        console.log(`⛓️ Lobby crypto con contractLobbyId=${lobbyData.contractLobbyId}. Join on-chain...`)
+        await joinLobbyOnChain(lobbyData)
+      }
+
       const res = await fetch(`${getApiUrl()}/lobbies/${lobbyId}/join`, {
         method: 'POST',
         headers: {
@@ -239,6 +366,28 @@ export const MiniApp: React.FC = () => {
     }
   }
 
+  // Refresca el balance ARS sandbox desde el backend (lo llama el ganador al terminar)
+  const refreshArsBalance = async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/sandbox/ars/balance`, {
+        headers: { 'x-wallet-id': walletId },
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      updateBalance(data.balance, 'ARS')
+      console.log('💰 Balance ARS actualizado:', data.balance)
+    } catch (err) {
+      console.error('Error refreshing ARS balance:', err)
+    }
+  }
+
+  // Cuando el juego termina, refrescar balance ARS
+  useEffect(() => {
+    if (gameState?.winner && gameState?.currency === 'ARS') {
+      refreshArsBalance()
+    }
+  }, [gameState?.winner])
+
   // ⏭ NUEVO: handler para pasar turno después de robar
   const handlePassTurn = async () => {
     if (!gameId || playerIndex === null) {
@@ -281,25 +430,41 @@ export const MiniApp: React.FC = () => {
       return
     }
 
+    const leaveLobby = (reason: string) => {
+      alert(reason)
+      setScreen('lobby')
+      setGameId(null)
+      setCurrentLobby(null)
+      setLobbyPlayers([])
+    }
+
     const fetchLobbyDetails = async () => {
       try {
-        console.log(`🔄 Fetching lobby ${gameId}...`)
         const res = await fetch(`${getApiUrl()}/lobbies/${gameId}`)
-        if (!res.ok) throw new Error('Lobby not found')
+
+        // Lobby eliminado o no encontrado
+        if (res.status === 404) {
+          leaveLobby('El lobby ya no existe.')
+          return
+        }
+        if (!res.ok) throw new Error('Error al obtener lobby')
+
         const data = await res.json()
         const lobby = data.lobby || data
-        console.log(`✅ Lobby fetched:`, lobby)
-        console.log(`   📊 Players: ${lobby.players?.length || 0} / ${lobby.maxPlayers}`)
-        console.log(`   ⏱️ Status: ${lobby.status}`)
-        
-        // Si el juego ya comenzó, cambiar a game screen con el gameId correcto
+
+        // Lobby cancelado por el creador
+        if (lobby.status === 'cancelled') {
+          leaveLobby('El lobby fue cancelado por el creador.')
+          return
+        }
+
+        // Juego iniciado → pasar a game screen
         if (lobby.status === 'started' && lobby.gameId) {
-          console.log(`🎮 Game has started! Changing to game screen with gameId=${lobby.gameId}`)
           setGameId(lobby.gameId)
           setScreen('game')
           return
         }
-        
+
         setCurrentLobby(lobby)
         setLobbyPlayers(lobby.players || [])
       } catch (err) {
@@ -449,6 +614,27 @@ if (!isAuthenticated) {
             </div>
           </div>
 
+          {/* Invite link for private lobbies */}
+          {!currentLobby.isPublic && gameId && (
+            <div className="invite-section">
+              <p className="invite-label">🔒 Sala privada — compartí el link:</p>
+              <button
+                className="btn-copy-invite"
+                onClick={() => {
+                  const base = window.location.origin + window.location.pathname
+                  const url = `${base}?lobbyId=${gameId}${currentLobby.password ? `&password=${encodeURIComponent(currentLobby.password)}` : ''}`
+                  navigator.clipboard.writeText(url).then(() => {
+                    alert('📋 Link copiado al portapapeles')
+                  }).catch(() => {
+                    prompt('Copiá este link:', url)
+                  })
+                }}
+              >
+                📋 Copiar link de invitación
+              </button>
+            </div>
+          )}
+
           <div className="waiting-actions">
             {currentLobby.creatorId === walletId ? (
               <>
@@ -504,9 +690,16 @@ if (!isAuthenticated) {
             onPlayCard={playCard}
             onDrawCard={drawCard}
             onPassTurn={handlePassTurn}
-            connected={connected} 
+            onCallUno={callUno}
+            onChallengeUno={challengeUno}
+            connected={connected}
             onGameEnd={() => {
               setScreen('lobby')
+              setGameId(null)
+              setPlayerIndex(null)
+            }}
+            onLeaderboard={() => {
+              setScreen('leaderboard')
               setGameId(null)
               setPlayerIndex(null)
             }}

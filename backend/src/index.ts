@@ -1,9 +1,10 @@
-import express, { Request, Response } from 'express'
+import express, { Request, Response, NextFunction } from 'express'
 import http from 'http'
 import WebSocket from 'ws'
 import cors from 'cors'
+import rateLimit from 'express-rate-limit'
 import { createPublicClient, http as viemHttp } from 'viem'
-import { polygonAmoy } from 'viem/chains'
+import { baseSepolia } from 'viem/chains'
 import { GameService } from './services/GameService'
 import { UserService } from './services/UserService'
 import { TransactionService } from './services/TransactionService'
@@ -17,21 +18,86 @@ import 'dotenv/config'
 import { testDbConnection, pool } from './db'
 import { getMatchStatsForWallet, saveMatchResult } from './matchStats'
 
+// Persistencia
+import { loadState, startAutosave } from './services/StateStore'
+
 const app = express()
 const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 // Enable CORS for all routes
+const allowedOrigins = [
+  process.env.FRONTEND_URL,                 // producción (Vercel)
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+].filter(Boolean) as string[]
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL,
+    origin: (origin, callback) => {
+      // Permitir requests sin origin (curl, Postman, mobile apps)
+      if (!origin) return callback(null, true)
+      // Permitir cualquier IP local (192.168.x.x, 10.x.x.x, 172.x.x.x)
+      if (/^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin)) {
+        return callback(null, true)
+      }
+      if (allowedOrigins.includes(origin)) return callback(null, true)
+      callback(new Error(`CORS: origin ${origin} not allowed`))
+    },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-wallet-id'],
   }),
 )
 
 
-// Middleware
+// ============ RATE LIMITING ============
+
+/** General: 100 req/min por IP */
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+})
+
+/** Endpoints críticos: 10 req/min por IP */
+const strictLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests on this endpoint, please slow down.' },
+})
+
+/** Auth: 20 req/min por IP */
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many auth attempts, please try again later.' },
+})
+
+app.use(generalLimiter)
+
+// ============ ADMIN KEY MIDDLEWARE ============
+
+const ADMIN_KEY = process.env.ADMIN_KEY
+
+function requireAdminKey(req: Request, res: Response, next: NextFunction) {
+  if (!ADMIN_KEY) {
+    // Si no está configurado, bloquear siempre
+    return res.status(403).json({ error: 'Admin endpoints disabled' })
+  }
+  if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+    return res.status(403).json({ error: 'Invalid or missing x-admin-key' })
+  }
+  next()
+}
+
+// ============ MIDDLEWARE ============
 app.use(express.json())
 
 // Services
@@ -39,19 +105,65 @@ const gameService = new GameService()
 const userService = new UserService()
 const transactionService = new TransactionService(userService)
 const nonceService = new NonceService()
-const contractService = new ContractService('ETH')
+const contractService = new ContractService('BASE')
+
+// Restaurar estado previo si existe
+const savedState = loadState()
+if (savedState) {
+  gameService.loadPersistedState(savedState)
+}
+
+// Autosave cada 30s + al cerrar el proceso
+startAutosave(() => ({
+  ...gameService.getPersistedState(),
+  savedAt: new Date().toISOString(),
+}))
 
 // Variable to throttle /lobbies log
 let lastLobbiesLogTime = 0
 
-// Viem client for SIWE verification
+// Viem client for SIWE verification (Base Sepolia en testnet, Base mainnet en prod)
 const publicClient = createPublicClient({
-  chain: polygonAmoy,
+  chain: baseSepolia,
   transport: viemHttp(),
 })
 
 // Map of game handlers
 const gameHandlers: Map<string, GameWebSocketHandler> = new Map()
+
+// ============ ON-CHAIN EVENT LISTENER ============
+// Cuando un lobby on-chain se llena, busca el lobby backend correspondiente
+// y arranca el juego automáticamente.
+contractService['ready'].then(() => {
+  contractService.onLobbyStarted(async (contractLobbyId, playerCount) => {
+    const allLobbies = gameService.getAllLobbies()
+    const lobby = allLobbies.find(
+      (l) => l.contractLobbyId === contractLobbyId && l.status === 'waiting',
+    )
+
+    if (!lobby) {
+      console.warn(`[WS] LobbyStarted para contractLobbyId=${contractLobbyId} sin lobby backend asociado`)
+      return
+    }
+
+    // Rellenar jugadores desde on-chain si hacen falta
+    try {
+      const onChainPlayers = await contractService.getLobbyPlayers(contractLobbyId)
+      for (const addr of onChainPlayers) {
+        gameService.joinLobby(lobby.id, addr)
+      }
+    } catch (err) {
+      console.error('[WS] Error leyendo jugadores on-chain:', err)
+    }
+
+    const result = gameService.startGame(lobby.id)
+    if (result.success) {
+      console.log(`🎮 Juego iniciado por evento on-chain — gameId=${result.gameId}, lobbyId=${lobby.id}`)
+    } else {
+      console.error(`[WS] startGame falló para lobby ${lobby.id}: ${result.error}`)
+    }
+  })
+})
 
 // ============ REST API ============
 
@@ -90,7 +202,7 @@ app.get('/health', (req: Request, res: Response) => {
  * DEBUG: insertar una partida de ejemplo en la BD
  * POST /debug/seed-game
  */
-app.post('/debug/seed-game', async (req: Request, res: Response) => {
+app.post('/debug/seed-game', requireAdminKey, async (req: Request, res: Response) => {
   try {
     const players = [
       '0x1111111111111111111111111111111111111111',
@@ -126,7 +238,7 @@ app.post('/debug/seed-game', async (req: Request, res: Response) => {
  * Body: { amount?: number }
  * Devuelve: { balance: number }
  */
-app.post('/sandbox/ars/faucet', (req: Request, res: Response) => {
+app.post('/sandbox/ars/faucet', requireAdminKey, (req: Request, res: Response) => {
   let walletId = (req.headers['x-wallet-id'] as string) || 'anon'
 
   const { amount } = req.body ?? {}
@@ -149,12 +261,31 @@ app.post('/sandbox/ars/faucet', (req: Request, res: Response) => {
 })
 
 /**
+ * Consultar balance ARS sandbox
+ * GET /sandbox/ars/balance
+ * Headers: { "x-wallet-id": string }
+ */
+app.get('/sandbox/ars/balance', requireAdminKey, (req: Request, res: Response) => {
+  const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
+  const balance = gameService.getArsSandboxBalance(walletId)
+  res.json({ balance })
+})
+
+/**
+ * Ver comisiones acumuladas de la casa (solo para admin/debug)
+ * GET /admin/house-fees
+ */
+app.get('/admin/house-fees', requireAdminKey, (_req: Request, res: Response) => {
+  res.json({ houseFeeBalance: gameService.getHouseFeeBalance() })
+})
+
+/**
  * Generate a new SIWE nonce
  * POST /auth/nonce
  * Body: {}
  * Returns: { nonce: string }
  */
-app.post('/auth/nonce', (req: Request, res: Response) => {
+app.post('/auth/nonce', authLimiter, (req: Request, res: Response) => {
   try {
     const nonce = nonceService.generateNonce()
     res.json({ nonce })
@@ -169,7 +300,7 @@ app.post('/auth/nonce', (req: Request, res: Response) => {
  * POST /auth/verify
  * Body: { wallet: string, signature: string, message: string, nonce: string }
  */
-app.post('/auth/verify', async (req: Request, res: Response) => {
+app.post('/auth/verify', authLimiter, async (req: Request, res: Response) => {
   try {
     const { wallet, signature, message, nonce } = req.body
 
@@ -259,7 +390,7 @@ app.post('/auth/verify', async (req: Request, res: Response) => {
  * Create a new lobby on-chain (contrato directo)
  * POST /lobby/create
  */
-app.post('/lobby/create', async (req: Request, res: Response) => {
+app.post('/lobby/create', strictLimiter, async (req: Request, res: Response) => {
   try {
     const { token, entryFee, maxPlayers } = req.body
     if (!token || !entryFee || !maxPlayers) {
@@ -326,7 +457,7 @@ app.post('/lobby/create', async (req: Request, res: Response) => {
  * Create a new lobby (API principal usada por la mini-app)
  * POST /lobbies
  */
-app.post('/lobbies', async (req: Request, res: Response) => {
+app.post('/lobbies', strictLimiter, async (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
   const { betAmount, isPublic, password, maxPlayers = 2, currency = 'ARS', network } = req.body
 
@@ -406,6 +537,29 @@ app.post('/lobbies', async (req: Request, res: Response) => {
       currency,
       network,
     )
+
+    // Crear lobby on-chain y guardar el contractLobbyId
+    const { ethers } = await import('ethers')
+    const tokenAddress = currency === 'ETH'
+      ? ethers.ZeroAddress
+      : ethers.ZeroAddress // TODO: mapear USDT/USDC a sus addresses en Base
+
+    const entryFeeWei = currency === 'ETH'
+      ? BigInt(Math.round(betAmount * 1e18))
+      : BigInt(Math.round(betAmount * 1e6)) // USDT/USDC tienen 6 decimales
+
+    try {
+      const onChainResult = await contractService.createLobby(tokenAddress, entryFeeWei, maxPlayers)
+      if (onChainResult) {
+        lobby.contractLobbyId = BigInt(onChainResult.lobbyId)
+        lobby.txHash = onChainResult.txHash
+        console.log(`⛓️  On-chain lobby creado: contractLobbyId=${onChainResult.lobbyId}, tx=${onChainResult.txHash}`)
+      }
+    } catch (onChainErr) {
+      // No bloquear la creación del lobby backend si falla on-chain
+      console.error('⚠️  Error creando lobby on-chain (lobby backend creado igual):', onChainErr)
+    }
+
     console.log(`🎮 New lobby created: ${lobby.id}`)
     console.log(
       `   Creator: ${walletId}, Bet: ${betAmount} ${currency}${
@@ -489,7 +643,7 @@ app.get('/lobbies/:lobbyId', (req: Request, res: Response) => {
  * Join lobby
  * POST /lobbies/:lobbyId/join
  */
-app.post('/lobbies/:lobbyId/join', (req: Request, res: Response) => {
+app.post('/lobbies/:lobbyId/join', strictLimiter, (req: Request, res: Response) => {
   const walletId = (req.headers['x-wallet-id'] as string) || 'anon'
   const { password } = req.body
   const lobbyId = req.params.lobbyId
@@ -504,11 +658,19 @@ app.post('/lobbies/:lobbyId/join', (req: Request, res: Response) => {
 
   const lobby = gameService.getLobby(lobbyId)
   console.log(`✅ Join exitoso. Lobby ahora tiene ${lobby?.players.length} jugadores`)
-  const formattedLobby = lobby
-    ? {
-        ...lobby,
-        contractLobbyId: lobby.contractLobbyId?.toString(),
-      }
+
+  // Auto-arrancar cuando el lobby está lleno
+  // Para CRYPTO: el arranque lo dispara el evento LobbyStarted on-chain
+  if (lobby && lobby.players.length >= lobby.maxPlayers && lobby.status === 'waiting' && lobby.economyMode !== 'CRYPTO') {
+    const startResult = gameService.startGame(lobbyId)
+    if (startResult.success) {
+      console.log(`🎮 Juego iniciado automáticamente — gameId=${startResult.gameId}`)
+    }
+  }
+
+  const updatedLobby = gameService.getLobby(lobbyId)
+  const formattedLobby = updatedLobby
+    ? { ...updatedLobby, contractLobbyId: updatedLobby.contractLobbyId?.toString() }
     : null
   res.json({ lobby: formattedLobby })
 })

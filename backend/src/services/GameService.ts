@@ -23,10 +23,15 @@ export interface LobbyData {
   gameId?: string
 }
 
+/** Porcentaje de comisión de la casa (5% — igual que FEE_PERCENTAGE en UnoLobbyV2.sol) */
+const HOUSE_FEE_PCT = 0.05
+
 export class GameService {
   private lobbies: Map<string, LobbyData> = new Map()
   private games: Map<string, GameEngine> = new Map()
   private arsBalances: Map<string, number> = new Map()
+  /** Acumula comisiones ARS cobradas */
+  private houseFeeBalance: number = 0
 
   // ============================
   // ARS SANDBOX BALANCES
@@ -34,6 +39,10 @@ export class GameService {
 
   getArsSandboxBalance(playerId: string): number {
     return this.arsBalances.get(playerId) ?? 0
+  }
+
+  getHouseFeeBalance(): number {
+    return this.houseFeeBalance
   }
 
   creditArsSandbox(playerId: string, amount: number): void {
@@ -92,15 +101,15 @@ export class GameService {
       currency,
       network: resolvedNetwork,
       maxPlayers,
-      players: [
-        {
-          id: creator,
-          name: creator,
-          hand: [],
-          hasCalledUno: false,
-          isChallenged: false,
-        },
-      ],
+      // En CRYPTO el creator no apuesta on-chain, no es jugador
+      // Los jugadores son quienes llamen joinLobby en el contrato
+      players: economyMode === 'ARS_SANDBOX' ? [{
+        id: creator,
+        name: creator,
+        hand: [],
+        hasCalledUno: false,
+        isChallenged: false,
+      }] : [],
       createdAt: new Date(),
       status: 'waiting',
       economyMode,
@@ -351,6 +360,20 @@ export class GameService {
     return engine.callUno(playerIndex)
   }
 
+  challengeUno(gameId: string, accuserIndex: number, targetIndex: number) {
+    const engine = this.games.get(gameId)
+    if (!engine) return { valid: false, error: 'Game not found' }
+
+    return engine.challengeUno(accuserIndex, targetIndex)
+  }
+
+  challengeWildDrawFour(gameId: string, accuserIndex: number, targetIndex: number) {
+    const engine = this.games.get(gameId)
+    if (!engine) return { valid: false, error: 'Game not found' }
+
+    return engine.challengeWildDrawFour(accuserIndex, targetIndex)
+  }
+
   chooseColor(gameId: string, playerIndex: number, color: string) {
     const engine = this.games.get(gameId)
     if (!engine) return { valid: false, error: 'Game not found' }
@@ -397,17 +420,38 @@ export class GameService {
       const betAmount = (gameState as any).bet || 0
       const totalPot = (gameState as any).pot || betAmount * allPlayerIds.length
 
+      // Aplicar comisión de la casa solo a partidas ARS con apuesta > 0
+      const isArs = (gameState as any).currency === 'ARS'
+      const houseFee = isArs && totalPot > 0 ? Math.floor(totalPot * HOUSE_FEE_PCT) : 0
+      const winnerPrize = totalPot - houseFee
+
+      if (houseFee > 0) {
+        this.houseFeeBalance += houseFee
+        console.log(`💰 House fee: $${houseFee} ARS (3% de $${totalPot}). Acumulado: $${this.houseFeeBalance}`)
+      }
+
+      // Acreditar premio neto al ganador en ARS sandbox
+      if (isArs && winnerPrize > 0) {
+        this.creditArsSandbox(winnerId, winnerPrize)
+        console.log(`🏆 Premio acreditado: $${winnerPrize} ARS → ${winnerId}`)
+      }
+
       const winners = [
         {
           userId: winnerId,
-          prizeAmount: totalPot,
+          prizeAmount: winnerPrize,
         },
       ]
 
-      // IMPORTANTE:
       // El guardado en BD ya lo hace el GameEngine (saveMatchResult).
       // Aquí solo distribuimos escrow + cerramos lobby.
       const distribution = gameEscrowService.distributePot(gameId, winners)
+
+      // Liquidar on-chain para partidas crypto (fire-and-forget)
+      const lobby = this.getLobbyByGameId(gameId)
+      if (lobby) {
+        this.settleOnChain(lobby, winnerId)
+      }
 
       this.markLobbyAsFinished(gameId)
       this.games.delete(gameId)
@@ -425,6 +469,32 @@ export class GameService {
     }
   }
 
+  private getLobbyByGameId(gameId: string): LobbyData | undefined {
+    for (const lobby of this.lobbies.values()) {
+      if (lobby.gameId === gameId) return lobby
+    }
+    return undefined
+  }
+
+  /**
+   * Llama a endLobby on-chain para liquidar el pozo en partidas crypto.
+   * Fire-and-forget: errores se loggean pero no bloquean el flujo.
+   */
+  private async settleOnChain(lobby: LobbyData, winnerId: string): Promise<void> {
+    if (!lobby.contractLobbyId || lobby.currency === 'ARS') return
+    const network = lobby.network
+    if (!network) return
+
+    try {
+      const { ContractService } = await import('./ContractService')
+      const contractService = new ContractService(network)
+      await contractService.endLobby(lobby.contractLobbyId, [winnerId])
+      console.log(`✅ On-chain settlement OK — lobby ${lobby.id}, winner ${winnerId}`)
+    } catch (err) {
+      console.error(`❌ On-chain settlement failed for lobby ${lobby.id}:`, err)
+    }
+  }
+
   private markLobbyAsFinished(gameId: string): void {
     for (const [lobbyId, lobby] of this.lobbies.entries()) {
       if (lobby.gameId === gameId) {
@@ -438,6 +508,38 @@ export class GameService {
   forceMarkLobbyAsFinished(gameId: string): void {
     this.markLobbyAsFinished(gameId)
     this.games.delete(gameId)
+  }
+
+  // ============================
+  // PERSISTENCIA
+  // ============================
+
+  /** Devuelve el estado serializable para persistir en disco */
+  getPersistedState() {
+    return {
+      lobbies: Array.from(this.lobbies.values()),
+      arsBalances: Object.fromEntries(this.arsBalances),
+      houseFeeBalance: this.houseFeeBalance,
+    }
+  }
+
+  /** Carga estado previo desde disco al arrancar el servidor */
+  loadPersistedState(state: {
+    lobbies: LobbyData[]
+    arsBalances: Record<string, number>
+    houseFeeBalance: number
+  }) {
+    // Solo restaurar lobbies que no estén terminados/cancelados
+    for (const lobby of state.lobbies) {
+      if (lobby.status !== 'finished' && lobby.status !== 'cancelled') {
+        this.lobbies.set(lobby.id, lobby)
+      }
+    }
+    for (const [id, balance] of Object.entries(state.arsBalances)) {
+      this.arsBalances.set(id, balance)
+    }
+    this.houseFeeBalance = state.houseFeeBalance
+    console.log(`[GameService] Estado restaurado: ${this.lobbies.size} lobbies, ${this.arsBalances.size} balances ARS`)
   }
 
   cancelGameWithEscrow(gameId: string): { success: boolean; returned?: any; error?: string } {
