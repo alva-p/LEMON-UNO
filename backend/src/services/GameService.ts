@@ -101,15 +101,13 @@ export class GameService {
       currency,
       network: resolvedNetwork,
       maxPlayers,
-      // En CRYPTO el creator no apuesta on-chain, no es jugador
-      // Los jugadores son quienes llamen joinLobby en el contrato
-      players: economyMode === 'ARS_SANDBOX' ? [{
+      players: [{
         id: creator,
         name: creator,
         hand: [],
         hasCalledUno: false,
         isChallenged: false,
-      }] : [],
+      }],
       createdAt: new Date(),
       status: 'waiting',
       economyMode,

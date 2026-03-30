@@ -3,9 +3,8 @@ set -e
 
 export BASE_SEPOLIA_RPC=https://base-sepolia.g.alchemy.com/v2/I62oP3aM8aVhfpkb1dgKi
 CONTRACT=0x08d677A4BF59B80cA31BFe3c9AEa32059092bBC6
-CREATOR=0x09326f91bC06e15cd623292bd302EfbA2bDF580f
+CREATOR=0xD82631E74F7c42d306B1f3CDa51251f834c07238  # lemon3 actúa como creador/jugador
 LEMON2=0xf7eB8BF19173d22e10837035f25C11C2f7959192
-LEMON3=0xD82631E74F7c42d306B1f3CDa51251f834c07238
 BACKEND=http://localhost:3001
 KS_PASS=${KEYSTORE_PASSWORD:-Antoniaesloca}
 # cast 1.5.x usa ETH_PASSWORD como ruta a un archivo con la password
@@ -15,7 +14,7 @@ export ETH_PASSWORD="$_PASS_FILE"
 trap 'rm -f "$_PASS_FILE"' EXIT
 
 echo "=== 1. Crear lobby crypto via backend ==="
-LOBBY_RESP=$(curl -sf -X POST $BACKEND/lobbies -H "Content-Type: application/json" -H "x-wallet-id: $CREATOR" -d '{"betAmount":0.001,"isPublic":true,"maxPlayers":2,"currency":"ETH","network":"BASE"}')
+LOBBY_RESP=$(curl -sf -X POST $BACKEND/lobbies -H "Content-Type: application/json" -H "x-wallet-id: $CREATOR" -d '{"betAmount":0.0005,"isPublic":true,"maxPlayers":2,"currency":"ETH","network":"BASE"}')
 echo "$LOBBY_RESP" | jq '{id:.lobby.id,contractLobbyId:.lobby.contractLobbyId,txHash:.lobby.txHash}'
 
 LOBBY_ID=$(echo "$LOBBY_RESP" | jq -r '.lobby.id')
@@ -27,20 +26,17 @@ fi
 echo "lobbyId=$LOBBY_ID  contractLobbyId=$CONTRACT_LOBBY_ID"
 
 echo ""
-echo "=== 2. lemon2 se une on-chain ==="
-cast send $CONTRACT "joinLobby(uint256)" $CONTRACT_LOBBY_ID --value 0.001ether --account lemon2 --rpc-url $BASE_SEPOLIA_RPC > /dev/null
+echo "=== 2. creator se une on-chain (paga apuesta) ==="
+cast send $CONTRACT "joinLobby(uint256)" $CONTRACT_LOBBY_ID --value 0.0005ether --account lemon3 --rpc-url $BASE_SEPOLIA_RPC > /dev/null
 echo "  TX confirmada"
-
-echo "=== 2b. Notificar backend que lemon2 se unió ==="
-curl -sf -X POST $BACKEND/lobbies/$LOBBY_ID/join -H "Content-Type: application/json" -H "x-wallet-id: $LEMON2" -d '{}' | jq '{status:.lobby.status,players:(.lobby.players|length),gameId:.lobby.gameId}'
 
 echo ""
-echo "=== 3. lemon3 se une on-chain (dispara LobbyStarted) ==="
-cast send $CONTRACT "joinLobby(uint256)" $CONTRACT_LOBBY_ID --value 0.001ether --account lemon3 --rpc-url $BASE_SEPOLIA_RPC > /dev/null
+echo "=== 3. lemon2 se une on-chain (dispara LobbyStarted) ==="
+cast send $CONTRACT "joinLobby(uint256)" $CONTRACT_LOBBY_ID --value 0.0005ether --account lemon2 --rpc-url $BASE_SEPOLIA_RPC > /dev/null
 echo "  TX confirmada"
 
-echo "=== 3b. Notificar backend que lemon3 se unió (auto-arranca juego) ==="
-FINAL=$(curl -sf -X POST $BACKEND/lobbies/$LOBBY_ID/join -H "Content-Type: application/json" -H "x-wallet-id: $LEMON3" -d '{}')
+echo "=== 3b. Notificar backend que lemon2 se unió (auto-arranca juego) ==="
+FINAL=$(curl -sf -X POST $BACKEND/lobbies/$LOBBY_ID/join -H "Content-Type: application/json" -H "x-wallet-id: $LEMON2" -d '{}')
 echo "$FINAL" | jq '{status:.lobby.status,players:(.lobby.players|length),gameId:.lobby.gameId}'
 
 GAME_ID=$(echo "$FINAL" | jq -r '.lobby.gameId')

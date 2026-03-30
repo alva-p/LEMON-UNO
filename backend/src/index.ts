@@ -483,7 +483,7 @@ app.post('/lobbies', strictLimiter, async (req: Request, res: Response) => {
     let minBet = 0
     let maxBet = 0
     if (currency === 'ETH') {
-      minBet = 0.001
+      minBet = 0.0005
       maxBet = 10
     }
     if (currency === 'USDT' || currency === 'USDC') {

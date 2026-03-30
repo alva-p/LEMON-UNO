@@ -142,10 +142,11 @@ export const MiniApp: React.FC = () => {
       if (!res.ok) throw new Error('Error al crear lobby')
       const data = await res.json()
 
-      // Si es ETH y hay txHash, mostrar confirmación
-      if (currency === 'ETH' && data.lobby.txHash) {
-        console.log('✅ Lobby ETH creado on-chain. TxHash:', data.lobby.txHash)
-        alert(`🎉 Lobby creado exitosamente!\n\nTransacción: ${data.lobby.txHash.slice(0, 10)}...${data.lobby.txHash.slice(-8)}\n\nEsperando confirmación de red...`)
+      // Si es CRYPTO, el creador debe unirse on-chain (paga su apuesta)
+      if (currency !== 'ARS' && data.lobby.contractLobbyId) {
+        console.log('⛓️ Lobby CRYPTO creado. Uniendo creador on-chain...')
+        await joinLobbyOnChain(data.lobby)
+        console.log('✅ Creador unido on-chain. TxHash del lobby:', data.lobby.txHash)
       }
 
       // Para ARS, el backend retorna el lobby completo en data.lobby
