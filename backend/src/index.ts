@@ -28,6 +28,7 @@ const wss = new WebSocket.Server({ server })
 // Enable CORS for all routes
 const allowedOrigins = [
   process.env.FRONTEND_URL,                 // producción (Vercel)
+  'https://lemon-uno.vercel.app',
   'http://localhost:5173',
   'http://localhost:3000',
   'http://127.0.0.1:5173',
@@ -36,12 +37,14 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Permitir requests sin origin (curl, Postman, mobile apps)
+      // Permitir requests sin origin (curl, Postman, WebView de Lemon Cash)
       if (!origin) return callback(null, true)
       // Permitir cualquier IP local (192.168.x.x, 10.x.x.x, 172.x.x.x)
       if (/^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin)) {
         return callback(null, true)
       }
+      // Permitir cualquier subdominio de vercel.app (previews)
+      if (/\.vercel\.app$/.test(origin)) return callback(null, true)
       if (allowedOrigins.includes(origin)) return callback(null, true)
       callback(new Error(`CORS: origin ${origin} not allowed`))
     },
