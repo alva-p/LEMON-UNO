@@ -526,7 +526,9 @@ if (!webview && webview !== null) {
     host.startsWith("192.168.") ||
     host.startsWith("10.") ||
     host.includes("vercel.app") ||
-    host.endsWith("alva-p.xyz");
+    host.endsWith("alva-p.xyz") ||
+    host.includes("ngrok-free.dev") ||
+    host.includes("ngrok.io");
 
   if (!allowed) {
     return (

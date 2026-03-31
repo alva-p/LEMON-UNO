@@ -45,6 +45,8 @@ app.use(
       }
       // Permitir cualquier subdominio de vercel.app (previews)
       if (/\.vercel\.app$/.test(origin)) return callback(null, true)
+      // Permitir ngrok (desarrollo local con túnel)
+      if (/\.ngrok-free\.dev$/.test(origin) || /\.ngrok\.io$/.test(origin)) return callback(null, true)
       if (allowedOrigins.includes(origin)) return callback(null, true)
       callback(new Error(`CORS: origin ${origin} not allowed`))
     },
